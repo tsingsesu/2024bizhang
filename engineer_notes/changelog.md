@@ -58,3 +58,19 @@ To   DL1B 距离(mm)     exp 曝光               g 增益
 
 正常直道预期：`FR` 30~59、`W` 20~50、`T0` 150~220、`zy` 60~70。
 `FR<40` 会把舵机拉回中位；`W` 明显偏大（60+）说明二值化太亮，调小 `zy`。
+
+### V3（2026-10-22，深夜）
+
+| 文件 | 改动 |
+|---|---|
+| `code/Img_analyse.c/.h` | 新增 `Marker_Scan()`：中央竖带 36~84 列，白点多=横道/停车线，白点少的连续行=菱形；近车头单行白线按停车线处理 |
+| `user/cpu1_main.c` | `Marker_Scan` 放在 `Image_Handle` **之后**（先扫会被补线当成"赛道变宽"） |
+| `code/control.c` | `Control_Speed` 末尾状态机 0→1（菱形慢行 50%）→2（横道停车 1000×5ms=5s）→3；仅 `Stop_1=1` 生效；发车前舵机也叠加 `Steer_Trim` |
+| `user/cpu0_main.c` | 日志加 `V<n>` 前缀与 `DI/CW/MK` 字段 |
+| `code/Lu_UI.h` | `CAR_LOG_VERSION` 单一来源，当前 3 |
+
+日志新增字段：
+
+```
+DI=菱形seen/near行/score   CW=横道seen/near行/score   MK=mk_state(0~3)
+```
