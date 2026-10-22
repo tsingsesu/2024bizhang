@@ -38,7 +38,8 @@
 
 // ================= ★WiFi(SPI) 图传 → 逐飞助手 =================
 // 1 = 开（模块未到或没配网时请改 0，否则上电会多等几秒）
-#define CAMERA_SEND_ENABLE      (1)   // ★WiFi 已连通，开图传   // ★先关图传：WiFi 没通时会卡主循环
+#define CAMERA_SEND_ENABLE      (0)   // [2026-10-22] 图传暂关：它和 UDP 日志共用一条连接会串数据
+                                      //   要看图：改回 1，并把 wifi_spi.h 的 AUTO_CONNECT 改回 1(逐飞助手TCP)
 
 // ★图传内容：1 = 原始灰度图（调曝光/增益用）  0 = 二值图（调阈值/跑车用）
 // ★图传内容：1 = 灰度原图  0 = 二值图（长按 S4 就地切换）
@@ -46,6 +47,14 @@ uint8 cam_send_raw = 1;
 
 // ★图传降频：每 N 帧新图发一条，主循环更跟手（1 = 每帧都发）
 #define CAM_SEND_DIV            (2)
+
+// ================= ★UDP 日志（2026-10-22 新增）=================
+// 1 = 通过 WiFi 向电脑发日志（电脑端跑 tools/car_log.py 接收）
+// 0 = 关掉，比赛时可以关
+#define CAR_LOG_ENABLE          (1)
+#define CAR_LOG_PERIOD_LOOPS    (60)      // 每 N 圈主循环发一条心跳
+static uint16 car_log_cnt  = 0;
+static uint32 car_log_tick = 0;
 
 extern uint8 wifi_init_step;
 static uint8 cam_send_cnt = 0;   // ★图传降频计数
@@ -66,6 +75,11 @@ int core0_main(void)
     // ★WiFi 模块初始化（不受图传开关影响，方便看 WiFiRet / WiFiStep）
     wifi_init_ret = wifi_spi_init(WIFI_SSID, WIFI_PASS);
     if(0 != wifi_init_ret) wifi_spi_raw_probe();   // ★诊断：绕开 INT 直接读
+#if CAR_LOG_ENABLE
+    wifi_spi_send_string("BOOT wifi_step=");
+    { char log_buf[48]; sprintf(log_buf, "%d ret=%d ver=%s\r\n",
+        wifi_init_step, wifi_init_ret, wifi_spi_version); wifi_spi_send_string(log_buf); }
+#endif
 #if CAMERA_SEND_ENABLE
     seekfree_assistant_interface_init(SEEKFREE_ASSISTANT_WIFI_SPI);
     seekfree_assistant_camera_config(&camera_information, SEEKFREE_ASSISTANT_CAMERA_TYPE_MT9V03X,
@@ -97,6 +111,19 @@ int core0_main(void)
         }
 #endif
         LuUI_Log_Poll();   // [2026-10-20] CPU1-requested serial telemetry (off by default)
+#if CAR_LOG_ENABLE
+        // ★心跳：每 CAR_LOG_PERIOD_LOOPS 圈发一行关键量，电脑端 car_log.py 里看
+        if(++ car_log_cnt >= CAR_LOG_PERIOD_LOOPS)
+        {
+            char log_buf[96];
+            car_log_cnt = 0;
+            car_log_tick ++;
+            sprintf(log_buf, "T=%lu P=%d LC=%d duty=%ld st=%d/%d trim=%d\r\n",
+                (unsigned long)car_log_tick, (int)Point, (int)Line_Count,
+                (long)SD5_Duty, (int)Flag_stop, (int)Flag_turn, (int)Steer_Trim);
+            wifi_spi_send_string(log_buf);
+        }
+#endif
         LuUI_Key();
         LuUI_Show();    // ★屏幕已确认可用（官方例程能亮）；坐标已核对不会触发 zf_assert
                         //   LuUI_Key() 必须保留（按键扫描在里面）

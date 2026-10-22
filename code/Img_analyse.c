@@ -278,9 +278,19 @@ void Image_Handle(uint8 *data)
     //Out_Side = 0;         // 丢线控制
     Line_Count = 59;      // 记录成功识别到的赛道行数
     /***************************** 第一行特殊处理 *****************************/
+    /* [2026-10-22] Right_Flag 一旦被置 1 就再也没人清零（zuobianjie/youbianjie
+       里置 1，但没有任何函数调用它们），所以从第一帧起 First_Line_Handle 就
+       不再执行，res 永远是未初始化值。原来这句是 `if (res == 0)`，等于在读
+       栈上的垃圾：值碰巧是 0 的这一帧直接 return，什么都不更新，Point 一直
+       停在旧值——表现就是偶尔丢帧后舵机卡住不跟线。
+       改成「只有真的判断了第一行、且判断失败」才 return。 */
     if(!Right_Flag)
     {
         res = First_Line_Handle(data);
+    }
+    else
+    {
+        res = 1;
     }
     if (res == 0)
     {

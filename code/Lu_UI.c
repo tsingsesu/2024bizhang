@@ -91,8 +91,11 @@ void LuUI_Show_page1(void)
 
     ips200_show_int(Show_X[1],Show_Y[7],dl1b_distance_mm,4);
 
-    ips200_show_float(Show_X[1],Show_Y[8],Flag_turn,4,4);
-    ips200_show_float(Show_X[2],Show_Y[8],Flag_stop,4,4);
+    /* [2026-10-22] page3 新增 STrim 一行后，最下面一行 y 会超屏；
+       这里改成 uint8 用 show_int 画，3 位 = 150+26=176，留足余量。
+       （ips200_show_int 会画 位数*2+2 个字符，x 超 232 就触发 zf_assert） */
+    ips200_show_int(Show_X[2],Show_Y[8],Flag_stop,3);
+    ips200_show_int(Show_X[1],Show_Y[8],Flag_turn,3);
 
     ips200_show_int(Show_X[1],Show_Y[9],Rhombus_Flag,4);
     ips200_show_int(Show_X[2],Show_Y[9],Deal_Flag,4);
@@ -239,7 +242,7 @@ void LuUI_Show_page3(void)
     ips200_show_int(180,    Show_Y[11], mt9v03x_finish_flag, 3);
 
     ips200_show_string(16, Show_Y[5], "STrim");
-    ips200_show_int(150, Show_Y[5], Steer_Trim, 4);
+    ips200_show_int(120, Show_Y[5], Steer_Trim, 4);   // 负号+3位=48px，120+48=168
 
     ips200_show_string(16, Show_Y[7], "RawCmd");
     ips200_show_int(80,  Show_Y[7], wifi_raw_cmd, 3);
@@ -304,7 +307,7 @@ void LuUI_Key(void)
             switch(Parameter_Choose_flag)
             {
                 case 0: if(zyuzhi > 20) zyuzhi -= 4; break;
-                case 1: Differ -= 1; break;
+                case 1: if(Differ > -50) Differ -= 1; break;   // [2026-10-22] 与 flash 校验范围一致
                 case 2: if(cam_exposure > 60) { cam_exposure -= 100; cam_param_apply(); } break;
                 case 3: if(cam_gain > 16)   { cam_gain     -= 4;  cam_param_apply(); } break;
                 default: if(Steer_Trim > -60) Steer_Trim -= 2; break;
@@ -325,7 +328,7 @@ void LuUI_Key(void)
             switch(Parameter_Choose_flag)
             {
                 case 0: if(zyuzhi < 255) zyuzhi += 4; break;
-                case 1: Differ += 1; break;
+                case 1: if(Differ < 50) Differ += 1; break;
                 case 2: if(cam_exposure < 10000) { cam_exposure += 100; cam_param_apply(); } break;
                 case 3: if(cam_gain < 64)      { cam_gain     += 4;  cam_param_apply(); } break;
                 default: if(Steer_Trim < 60)  Steer_Trim += 2; break;
@@ -382,6 +385,7 @@ void LuUI_Key(void)
             {
                 zyuzhi       = 109;
                 Differ       = 13;
+                Steer_Trim   = 0;    // [2026-10-22] 恢复默认时转向也要回 0
                 cam_exposure = 1010;
                 cam_gain     = 44;
                 cam_param_apply();
