@@ -257,12 +257,12 @@ void LuUI_Show_page3(void)
     ips200_show_int(130,     Show_Y[6], diedai_img_avg, 3);
     ips200_show_string(170, Show_Y[6], cam_set_exp_ret ? "E!" : "Eok");
     ips200_show_string(200, Show_Y[6], cam_set_gain_ret ? "G!" : "Gok");
-    /* [2026-10-22] 实时舵机中位（可现场校准，见 S2 长按） */
-    ips200_show_string(16,  Show_Y[5], "SMid");
-    ips200_show_int(60,     Show_Y[5], Steer_Mid, 4);
-    ips200_show_string(120, Show_Y[5], "Trm");
-    ips200_show_string(16, Show_Y[5], "STrim");
-    ips200_show_int(120, Show_Y[5], Steer_Trim, 4);   // 负号+3位=48px，120+48=168
+    /* [2026-10-22] 舵机中位 + 微调：标签别互相覆盖（原来 Mid 值画到 120 会盖住 Trm） */
+    ips200_show_string(16,  Show_Y[5], "Mid");
+    ips200_show_int(44,     Show_Y[5], Steer_Mid, 4);
+    ips200_show_string(132, Show_Y[5], "Trm");
+    ips200_show_int(164,    Show_Y[5], Steer_Trim, 3);
+    if(steer_mid_cal) ips200_show_string(200, Show_Y[5], "CAL");
 
     ips200_show_string(16, Show_Y[7], "RawCmd");
     ips200_show_int(80,  Show_Y[7], wifi_raw_cmd, 3);
