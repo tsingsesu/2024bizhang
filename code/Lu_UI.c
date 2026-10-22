@@ -13,7 +13,7 @@
    the picture could go all black.  0 = show the array as-is (grayscale). */
 #define LU_IMG_THRESHOLD    0
 /* 1 = page1 shows the RAW grayscale frame, 0 = binary image */
-#define LU_IMG_RAW_PREVIEW  0
+#define LU_IMG_RAW_PREVIEW  1   // [2026-10-22] 先看灰度原图，判断亮度和摄像头方向
 /* [2026-10-20] lu_ui_dbg_log is forwarded from CPU1 so the print happens on
    CPU0 (the only core owning the debug UART).  Keep it 0 during matches. */
 volatile uint8 lu_ui_dbg_log = 0;
@@ -219,7 +219,7 @@ void LuUI_Show_page3(void)
     ips200_show_string(16, Show_Y[8], "WiFiRet");
     ips200_show_int(150, Show_Y[8], wifi_init_ret, 3);
 
-    ips200_show_string(16, Show_Y[6], "S3- S4+ S5sel");
+    ips200_show_string(16, Show_Y[6], "min/max/avg");   // [2026-10-22] 图像亮度，替代原提示行
 
     ips200_show_string(16,  Show_Y[13], "Cnt");
     ips200_show_int(60,     Show_Y[13], mt9v03x_frame_cnt, 5);
@@ -241,6 +241,12 @@ void LuUI_Show_page3(void)
     ips200_show_string(120, Show_Y[11], "Frame");
     ips200_show_int(180,    Show_Y[11], mt9v03x_finish_flag, 3);
 
+    /* [2026-10-22] 图像亮度：上电不读 flash 后，zy 用代码默认 63；
+       这三项用来判断摄像头是不是太暗（iavg 正常应在 60~150）。 */
+    ips200_show_string(16,  Show_Y[6], "Img");
+    ips200_show_int(50,      Show_Y[6], diedai_img_min, 3);
+    ips200_show_int(90,      Show_Y[6], diedai_img_max, 3);
+    ips200_show_int(130,     Show_Y[6], diedai_img_avg, 3);
     ips200_show_string(16, Show_Y[5], "STrim");
     ips200_show_int(120, Show_Y[5], Steer_Trim, 4);   // 负号+3位=48px，120+48=168
 
@@ -411,9 +417,26 @@ void Parameter_Save(void)
     flash_union_buffer[5].float_type = (float)Steer_Trim;
     flash_union_buffer[4].float_type = 12345.0f;          // ★有效标记
     flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_INDEX);
+    /* [2026-10-22] 同时存一份到第 17 页：现场调好的值先冻结住，
+       以后把 PARAM_TUNING 改回 0 并核对无误，再从这里恢复正常读回。 */
+    if(flash_check(FLASH_SECTION_INDEX, FLASH_PAGE_BAK))
+        flash_erase_page(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
+    flash_buffer_clear();
+    flash_union_buffer[0].float_type = (float)zyuzhi;
+    flash_union_buffer[1].float_type = (float)Differ;
+    flash_union_buffer[2].float_type = (float)cam_exposure;
+    flash_union_buffer[3].float_type = (float)cam_gain;
+    flash_union_buffer[5].float_type = (float)Steer_Trim;
+    flash_union_buffer[4].float_type = 12345.0f;
+    flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
 }
 void Parameter_Read(void)
 {
+    /* [2026-10-22] PARAM_TUNING=1（见 Lu_UI.h）：本阶段不读 flash，
+       始终用代码里的默认值。比赛定稿后改回 0。 */
+#if PARAM_TUNING
+    return;
+#endif
     float z, d, e, g, mark;
 
     flash_buffer_clear();

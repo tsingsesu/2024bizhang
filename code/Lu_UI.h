@@ -21,6 +21,8 @@ void LuUI_Log_Poll(void);
 
 #define FLASH_SECTION_INDEX       (0)
 #define FLASH_PAGE_INDEX          (11)
+#define FLASH_PAGE_BAK            (17)   // [2026-10-22] 调参备份页，见 Parameter_Save
+#define PARAM_TUNING              (1)    // [2026-10-22] 1=上电不读 flash，用代码默认值；定稿后改 0
 extern int8 RMotorSpeed1;
 extern int16 canshu_test[8];
 extern int8 FLAG1111;
