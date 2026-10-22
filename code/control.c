@@ -141,9 +141,15 @@ void S3010_Control(void)
            the PID then steered on garbage.  Require a solid row band. */
         /* [2026-10-22] Line_Count 是 break 时的行号、不是有效行数（最坏停在 59），
            整帧没线时会放行残缺中线。改用本帧最远可信行 Result_Far_Row。 */
-        /* [2026-10-22] 中点贴到图像两侧 = 拟合结果不可信（起跑瞬间过曝、
-           找不到边线时会算出 P=2）。这种帧直接回中位，别送进 PID。 */
-        if((0 == Point) || (Point <= 6) || (Point >= (MT9V03X_W - 6)) ||
+        /* [2026-10-22] 三种情况一律回中位（不送 PID）：
+           1) 起跑后 1 秒稳定期内，图像还不可信
+           2) 中点贴到图像两侧（起跑过曝时会算出 P=2）
+           3) 第 50 行赛道宽度不是真实车道宽度（过暗时 L=1 R=100 W=99，
+              是扫描碰边界的假值，P 会被拉到 39 这种固定偏左值） */
+        if(steer_settle ||
+           (0 == Point) || (Point <= 6) || (Point >= (MT9V03X_W - 6)) ||
+           (Width_Real[50] < 20) || (Width_Real[50] > 70) ||
+           (Width_Real[40] < 20) || (Width_Real[40] > 70) ||   // 两行都合理才信任，单行噪声大
            (Result_Far_Row < STEER_MIN_VALID_ROWS))
             SD5_Duty = SteerMiddle + Steer_Trim;                 // ★没线时也带微调
         else

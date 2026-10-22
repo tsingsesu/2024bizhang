@@ -39,7 +39,12 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (9)
+#define CAR_LOG_VERSION           (10)
+/* [2026-10-22] 发车方式
+   0 = 仅长按 S1（当前，推荐）：ToF 装在低位、一直读地面 44~130mm，
+       8192 还是通信超时的无效值，用它发车会一上电就自己跑
+   1 = ToF 连续遮挡 2 秒（只有在确认 ToF 能稳定读到 >400mm 空旷时才用） */
+#define START_MODE                (0)
 
 // ================= ★WiFi(SPI) 图传 → 逐飞助手 =================
 // 1 = 开（模块未到或没配网时请改 0，否则上电会多等几秒）
@@ -71,6 +76,7 @@ static seekfree_assistant_camera_struct camera_information;
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU0的RAM中
 
 volatile uint32 main_loop_tick = 0;
+volatile uint8 steer_settle = 0;   // [2026-10-22] 1 = 起跑后仍在中位保护期
 
 int core0_main(void)
 {
@@ -143,6 +149,13 @@ int core0_main(void)
         }
 #endif
         LuUI_Key();
+        /* [2026-10-22] 起跑后的 1 秒内舵机保持中位，等摄像头曝光稳定，
+           避免用过曝/全黑的垃圾图像把舵机顶到极限。 */
+        {
+            static uint16 start_settle = 0;
+            if(Stop_1 && start_settle < 50) start_settle ++;   // 50 x 20ms ≈ 1s
+            steer_settle = (start_settle < 50);
+        }
         /* [2026-10-22] 调试后门：长按 S1(KEY_MID) 强制发车，不依赖 ToF。
            S1 在 LuUI_Key 里没有映射，不会和翻页/调参冲突。 */
         if(key_get_state(KEY_MID) == KEY_LONG_PRESS) Stop_1 = 1;
@@ -164,7 +177,7 @@ int core0_main(void)
             gpio_set_level(P20_13,1);//左后刹灯
             gpio_set_level(P20_14,1);//右后刹灯
 
-            if(start_trigger)
+            if((1 == START_MODE) && start_trigger)
             {
                 gpio_set_level(P02_4,0);//左前转向
                 gpio_set_level(P02_5,0);//左后转向
