@@ -29,3 +29,32 @@
 - 本轮改动还没在车子上编译烧录（本机没有 `cctc`，需要在 ADS 里 Build）
 - 图传（`CAMERA_SEND_ENABLE=1`）和 UDP 日志会同时占用 WiFi 模块，目前两者都用 `wifi_spi_send_*`，**同一条连接里混发**；如果图传一开日志就乱，先把 `CAMERA_SEND_ENABLE` 改 0
 - 2024 的标线/菱形逻辑和 2026 双车道规则不匹配，尚未动
+
+### 同日第二轮（UDP 日志跑通后）
+
+第一条日志就暴露了两个真问题：
+
+- `st=7/3`：`Flag_stop=7 / Flag_turn=3` 是 `Turn_Left/Turn_Right` 的起始状态，说明 **2024 菱形/斑马线状态机被 ToF 发车逻辑自动拉起来了**。已用 `MOTION_2024_ENABLE (0)` 整体包住（`Img_analyse.c`），先纯跟线。
+- `P=2 LC=59`：整帧没找到线时 `Line_Count` 停在 59，旧保护条件放行 → 舵机瞬间打到 915。新增 `Result_Far_Row`（本帧最远可信行），`control.c` 改用它做保护。
+
+| 文件 | 改动 |
+|---|---|
+| `code/Img_analyse.c` | `#define MOTION_2024_ENABLE (0)` 包住 170 行 2024 状态机；新增 `Result_Far_Row` |
+| `code/Img_analyse.h` | `extern uint8 Result_Far_Row;` |
+| `code/control.c` | 舵机保护 `Line_Count` → `Result_Far_Row` |
+| `libraries/zf_device/zf_device_mt9v03x.c` | `zyuzhi` 默认 109 → **63** |
+| `code/Lu_UI.c` | 恢复默认的 `zyuzhi` 同步改 63 |
+| `user/cpu0_main.c` | 心跳日志扩到 `FR/L/R/W/T0/zy/dl/Rm/To/exp/g`，周期 60→10 圈 |
+
+日志字段含义：
+
+```
+T    心跳序号          P  拟合中点(x)        LC 扫描停下的行号
+FR   本帧最远可信行     L/R 第50行左右边线    W 第50行宽度
+d    舵机占空比        st Flag_stop/Flag_turn Rm 菱形标志
+T0   Diedai 实际阈值   zy 系数+偏置           dl Differ_light
+To   DL1B 距离(mm)     exp 曝光               g 增益
+```
+
+正常直道预期：`FR` 30~59、`W` 20~50、`T0` 150~220、`zy` 60~70。
+`FR<40` 会把舵机拉回中位；`W` 明显偏大（60+）说明二值化太亮，调小 `zy`。
