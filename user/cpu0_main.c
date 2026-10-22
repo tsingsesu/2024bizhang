@@ -116,7 +116,7 @@ int core0_main(void)
         // ★心跳：每 CAR_LOG_PERIOD_LOOPS 圈发一行关键量，电脑端 car_log.py 里看
         if(++ car_log_cnt >= CAR_LOG_PERIOD_LOOPS)
         {
-            char log_buf[240];
+            char log_buf[320];   // 30 个字段，留足余量，防止 sprintf 溢出
             car_log_cnt = 0;
             car_log_tick ++;
             /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 50 行左右边线与宽度；
