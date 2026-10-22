@@ -26,7 +26,7 @@ void LuUI_Log_Poll(void);
 /* [2026-10-22] 标线动作开关，日志里用 MK%s 显示；
    0 = 只记录（首次实测用）  1 = 真正减速/停车 */
 #define MK_ACT_ENABLE             (0)
-#define CAR_LOG_VERSION           (6)    // [2026-10-22] 每次改代码 +1；日志每行开头 V3，防止拿旧日志对错版本
+#define CAR_LOG_VERSION           (7)    // [2026-10-22] 每次改代码 +1；日志每行开头 V3，防止拿旧日志对错版本
 extern int8 RMotorSpeed1;
 extern int16 canshu_test[8];
 extern int8 FLAG1111;

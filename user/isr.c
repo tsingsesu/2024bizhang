@@ -68,7 +68,10 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
        一旦发车（Stop_1=1）即使前方有东西也不再撤销。 */
     {
         static uint16 arm_cnt = 0;
-        if(!Stop_1)
+        /* [2026-10-22] 关键修正：布防是「一次生效就锁住」。
+           上一版在前方出现遮挡时把 start_armed 清零，等于伸手的一瞬间就撤销了布防，
+           发车计时永远起不来（V6 实测遮挡 5 秒不走）。 */
+        if(!Stop_1 && !start_armed)
         {
             if(dl1b_distance_mm > 400)
             {
@@ -77,7 +80,6 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
             else
             {
                 arm_cnt = 0;
-                start_armed = 0;
             }
         }
     }
