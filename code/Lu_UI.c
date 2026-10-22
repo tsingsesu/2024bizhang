@@ -308,7 +308,6 @@ void LuUI_Key(void)
        进入校准后：L = S3/S4（每下 2），R = S5（每下 1），长按 S5 保存到 flash。
        先进入 page3 再长按 S2。 */
     {
-        extern uint8 steer_mid_cal;
         static uint8 cal_done = 0;
         if(key_get_state(KEY_UP) == KEY_LONG_PRESS)
         {
@@ -328,7 +327,6 @@ void LuUI_Key(void)
     // ---------- S5 : 切换要调的变量 ----------
     if(key_get_state(KEY_RIGHT)==KEY_SHORT_PRESS && Key_Protect[KEY_RIGHT]==0)
     {
-        extern uint8 steer_mid_cal;
         if(steer_mid_cal)
         {
             int16 v = Steer_Mid + 1;
