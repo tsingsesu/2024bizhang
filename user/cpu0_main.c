@@ -39,7 +39,7 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (12)
+#define CAR_LOG_VERSION           (13)
 /* [2026-10-22] 发车方式
    0 = 仅长按 S1（当前，推荐）：ToF 装在低位、一直读地面 44~130mm，
        8192 还是通信超时的无效值，用它发车会一上电就自己跑
@@ -83,6 +83,16 @@ int core0_main(void)
    system_delay_ms(1500);
    clock_init();                   // 获取时钟频率<务必保留>
    debug_init();                   // 初始化默认调试串口
+    /* [2026-10-22] 先把舵机和电机引脚初始化，再去连 WiFi。
+       原因：WiFi 模块 INT 引脚坏，驱动全靠固定延时，wifi_spi_init() 要 ~15 秒。
+       原先 System() 排在它后面，这 15 秒里舵机信号线没有 PWM，舵机失去保持力，
+       会被转向拉杆/间隙拽到一边，看起来就是"开机就打死"。
+       现在上电 1.5 秒后舵机就锁在中位。 */
+    pwm_init(S_MOTOR_PIN, 50, SteerMiddle);
+    gpio_init(MOTOR1_A, GPO, GPIO_LOW, GPO_PUSH_PULL);
+    gpio_init(MOTOR2_A, GPO, GPIO_LOW, GPO_PUSH_PULL);
+    pwm_init(MOTOR1_B, 17000, 0);
+    pwm_init(MOTOR2_B, 17000, 0);
     // ★WiFi 模块初始化（不受图传开关影响，方便看 WiFiRet / WiFiStep）
     wifi_init_ret = wifi_spi_init(WIFI_SSID, WIFI_PASS);
     if(0 != wifi_init_ret) wifi_spi_raw_probe();   // ★诊断：绕开 INT 直接读
