@@ -1,0 +1,7 @@
+Debug/
+.ads/
+.settings/
+*.launch
+*.bak_*
+*.disabled
+*.launch
