@@ -114,6 +114,15 @@ void Marker_Scan(uint8 *data)
     uint8 cw_near = 0, dia_near = 0;
     uint8 wc, run_max, pairs;
 
+    /* [2026-10-22] 整幅过曝(>190)或过暗(<10)时二值图没有意义，
+       起跑瞬间 iavg=205 会让人行横道误报。 */
+    if(diedai_img_avg > 190 || diedai_img_avg < 10)
+    {
+        mk_cw_seen = 0;  mk_cw_near = 0;  mk_cw_score = 0;
+        mk_dia_seen = 0; mk_dia_near = 0; mk_dia_score = 0;
+        return;
+    }
+
     for(i = MK_ROW_MIN; i <= MK_ROW_MAX; i ++)
     {
         wc = 0; run_max = 0; pairs = 0; j0 = 0;
