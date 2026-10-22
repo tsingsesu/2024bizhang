@@ -6,6 +6,7 @@
 extern int32 RSpeedPWM,LSpeedPWM;
 
 extern uint16 Pwm_Max,Pwm_Min;
+extern int16 Steer_Trim;   // [2026-10-22] 转向微调，正值往左
 
 
 

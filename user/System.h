@@ -8,7 +8,7 @@
 #ifndef USER_SYSTEM_H_
 #define USER_SYSTEM_H_
 
-extern void System();
+extern void System(void);
 
 
 
