@@ -77,8 +77,21 @@ int32    SD5_Duty =  SteerMiddle;
 /* [2026-10-22] 舵机中位改成运行时变量：上电默认 SteerMiddle（代码里的标定值），
    掉电保存在 flash 第 17 页；page3 上可以用 S3/S4 现场微调，不用重新编译。
    注意：拉杆/舵机臂重新装过之后，857 就不再是中位了，必须重新校准。 */
-int16    Steer_Mid = SteerMiddle;
-int16    Steer_Trim = 4;      // ★转向微调：正值往左，负值往右
+int16    Steer_Mid = 917;   /* [2026-10-22] 实测中位(原代码 857 偏右约 5°) */
+
+/* [2026-10-22] 设置舵机中位，并让左右限幅跟着中位走。
+   之前 Pwm_Min/Max 写死 785/915，一旦真实中位超过 915（实测 917），
+   舵机就永远无法往左打，车只能单方向转。 */
+void Steer_Set_Mid(int16 m)
+{
+    if(m < 600) m = 600;
+    if(m > 1100) m = 1100;
+    Steer_Mid = m;
+    Pwm_Min   = (uint16)((m > 70) ? (m - 70) : 0);
+    Pwm_Max   = (uint16)((m < 990) ? (m + 70) : 1000);
+    SteerSet(m);
+}
+int16    Steer_Trim = 0;      // 转向微调：中位对正后用不到，只补很小的直道偏差
 uint8    showpoint[2] = {0};
 uint16   Speed_max = 150,Speed_min = 20;
 uint16   Pwm_Max = 915,Pwm_Min = 785;

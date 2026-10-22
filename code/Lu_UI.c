@@ -329,10 +329,7 @@ void LuUI_Key(void)
     {
         if(steer_mid_cal)
         {
-            int16 v = Steer_Mid + 1;
-            if(v > 1000) v = 1000;
-            Steer_Mid = v;
-            SteerSet(Steer_Mid);
+            Steer_Set_Mid(Steer_Mid + 1);   /* S5 ¾«µ÷ +1 */
             Page_Clear_flag = 1;
         }
         else if(Page_Choose_flag == 2)
@@ -353,10 +350,7 @@ void LuUI_Key(void)
     {
         if(steer_mid_cal)
         {
-            int16 v = Steer_Mid - 2;
-            if(v < 700) v = 700;
-            Steer_Mid = v;
-            SteerSet(Steer_Mid);
+            Steer_Set_Mid(Steer_Mid - 5);
         }
         else if(Page_Choose_flag == 2)
         {
@@ -381,10 +375,7 @@ void LuUI_Key(void)
     {
         if(steer_mid_cal)
         {
-            int16 v = Steer_Mid + 2;
-            if(v > 1000) v = 1000;
-            Steer_Mid = v;
-            SteerSet(Steer_Mid);
+            Steer_Set_Mid(Steer_Mid + 5);
         }
         else if(Page_Choose_flag == 2)
         {

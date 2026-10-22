@@ -8,6 +8,7 @@ extern int32 RSpeedPWM,LSpeedPWM;
 extern uint16 Pwm_Max,Pwm_Min;
 extern int16 Steer_Trim;   // [2026-10-22] 转向微调，正值往左
 extern int16 Steer_Mid;    // [2026-10-22] 运行时舵机中位（掉电保存）
+void Steer_Set_Mid(int16 m);   // [2026-10-22] 设中位并同步左右限幅
 extern double Run_Odo;   // [2026-10-22] 发车后绝对里程(cm)
 extern volatile uint8 steer_settle;   // [2026-10-22] 起跑后中位保护期
 
