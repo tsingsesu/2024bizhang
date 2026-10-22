@@ -64,25 +64,61 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
     interrupt_global_enable(0);                     // 开启中断嵌套
     pit_clear_flag(CCU61_CH0);
     Light();
-    /* [2026-10-22] 发车布防：上电后连续 1 秒前方 400mm 内无遮挡才布防；
-       一旦发车（Stop_1=1）即使前方有东西也不再撤销。 */
+    /* ================= [2026-10-22] 非接触发车（比赛规则要求） =================
+       规则：车辆初始化完成后必须用「挥手 / 遮挡」等非接触方式出发，禁止按键或遥控。
+       本机 ToF 装得低、平时一直读地面 40~130mm，所以不能再用「<300mm 就算遮挡」——
+       那样地面本身就会被当成手。改为相对基线检测：
+         1) 上电后约 1 秒，用有效读数求基线
+         2) 基线在地面段(10~800mm)：读数比基线近 25% 以上 = 有东西挡在光束里（手）
+         3) 基线为空旷(>=800mm 或采样无效)：任何有效读数 = 前方出现物体
+         4) 连续 1.5 秒满足才发车；手移开立刻清零
+       8192 是通信超时的无效值，一律不参与判断。 */
     {
-        static uint16 arm_cnt = 0;
-        /* [2026-10-22] 关键修正：布防是「一次生效就锁住」。
-           上一版在前方出现遮挡时把 start_armed 清零，等于伸手的一瞬间就撤销了布防，
-           发车计时永远起不来（V6 实测遮挡 5 秒不走）。 */
-        if(!Stop_1 && !start_armed)
+        static uint16 tf_cnt   = 0;     // 采样计数（0~100 建基线，之后持续检测）
+        static uint32 tf_sum   = 0;     // 基线求和
+        static uint16 tf_valid = 0;     // 基线有效样本数
+
+        if(!Stop_1)
         {
-            if(dl1b_distance_mm > 400)
+            uint16 d = dl1b_distance_mm;
+            uint8  valid = (d > 10 && d < 800);
+
+            if(!start_ready)
             {
-                if(++ arm_cnt >= 100) start_armed = 1;   // 100 x 10ms = 1s
+                /* 先等 1 秒让 ToF 初始化完成，再采 1 秒求基线 */
+                if(++ tf_cnt > 100)
+                {
+                    if(valid)
+                    {
+                        tf_sum += d;
+                        tf_valid ++;
+                    }
+                    if(tf_cnt >= 200)
+                    {
+                        start_base  = (tf_valid > 50) ? (uint16)(tf_sum / tf_valid) : 0;
+                        start_ready = 1;
+                        start_hold  = 0;
+                    }
+                }
             }
             else
             {
-                arm_cnt = 0;
+                uint8 blocked;
+                if(start_base == 0) blocked = valid;                    // 空旷：出现有效读数
+                else blocked = valid && ((uint32)d * 4 < (uint32)start_base * 3);  // 比基线近 25%
+
+                if(blocked)
+                {
+                    if(++ start_hold >= 150) start_trigger = 1;         // 1.5 秒
+                }
+                else
+                {
+                    start_hold = 0;
+                }
             }
         }
     }
+
     if(time_dl1b_on==1)
     {
          time_dl1b_s++;
@@ -90,25 +126,6 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
          {
               time_dl1b++;
          }
-    }
-
-    /* [2026-10-22] 发车触发：连续遮挡 ToF 2 秒（300mm 内），松手立刻清零。
-       旧逻辑是累计 5 秒，手来回伸几次会叠加，触发时机不稳定。 */
-    {
-        static uint16 start_cnt = 0;
-        if(!Stop_1)
-        {
-            if(start_armed && dl1b_distance_mm < 300)
-            {
-                if(++ start_cnt >= 200) start_trigger = 1;   // 200 x 10ms = 2s
-            }
-            else
-            {
-                start_cnt = 0;
-                time_dl1b_s = 0;      // 旧计时也一起清，避免残留
-                time_dl1b   = 0;
-            }
-        }
     }
 
 }

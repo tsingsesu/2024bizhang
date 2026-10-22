@@ -39,12 +39,12 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (10)
+#define CAR_LOG_VERSION           (11)
 /* [2026-10-22] 发车方式
    0 = 仅长按 S1（当前，推荐）：ToF 装在低位、一直读地面 44~130mm，
        8192 还是通信超时的无效值，用它发车会一上电就自己跑
    1 = ToF 连续遮挡 2 秒（只有在确认 ToF 能稳定读到 >400mm 空旷时才用） */
-#define START_MODE                (0)
+#define START_MODE                (1)
 
 // ================= ★WiFi(SPI) 图传 → 逐飞助手 =================
 // 1 = 开（模块未到或没配网时请改 0，否则上电会多等几秒）
@@ -133,7 +133,7 @@ int core0_main(void)
             /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 50 行左右边线与宽度；
                T0 = Diedai 实际二值阈值；zy = 阈值系数+偏置；dl = Differ_light；
                Rm = Rhombus_Flag；To = DL1B 距离 */
-            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d O=%d\r\n",
+            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d\r\n",
                 (int)CAR_LOG_VERSION,
                 (unsigned long)car_log_tick, (int)Point, (int)Line_Count, (int)Result_Far_Row,
                 (int)Left_Line[50], (int)Right_Line[50], (int)Width_Real[50],
@@ -143,7 +143,7 @@ int core0_main(void)
                 (int)diedai_img_min, (int)diedai_img_max, (int)diedai_img_avg,
                 (int)cam_set_exp_ret, (int)cam_set_gain_ret,
                 (int)mk_dia_seen, (int)mk_dia_near, (int)mk_dia_score,
-                (int)mk_cw_seen, (int)mk_cw_near, (int)mk_cw_score, (int)mk_state, (int)MK_ACT_ENABLE,
+                (int)mk_cw_seen, (int)mk_cw_near, (int)mk_cw_score, (int)mk_state, (int)MK_ACT_ENABLE, (int)start_ready, (int)start_base, (int)start_hold,
                 (int)Run_Odo);
             wifi_spi_send_string(log_buf);
         }

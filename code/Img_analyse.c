@@ -19,6 +19,9 @@ volatile uint8 start_armed = 0;
 /* [2026-10-22] 发车触发：必须「连续」遮挡 ToF 2 秒。旧逻辑是累计 5 秒 + 累计 2 秒，
    手来回伸几次时间会被加起来，触发时机看起来随机。松手立刻清零。 */
 volatile uint8 start_trigger = 0;
+/* [2026-10-22] 非接触发车诊断：基线距离(mm, 0=空旷)、连续命中计数、是否已建立基线 */
+volatile uint16 start_base = 0, start_hold = 0;
+volatile uint8  start_ready = 0;
 
 /*************************图像赛道数据****************************/
 uint16 Left_Line[61], Right_Line[61], Mid_Line[61]; // 原始左右边界数据
