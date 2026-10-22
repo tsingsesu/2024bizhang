@@ -64,6 +64,23 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
     interrupt_global_enable(0);                     // 开启中断嵌套
     pit_clear_flag(CCU61_CH0);
     Light();
+    /* [2026-10-22] 发车布防：上电后连续 1 秒前方 400mm 内无遮挡才布防；
+       一旦发车（Stop_1=1）即使前方有东西也不再撤销。 */
+    {
+        static uint16 arm_cnt = 0;
+        if(!Stop_1)
+        {
+            if(dl1b_distance_mm > 400)
+            {
+                if(++ arm_cnt >= 100) start_armed = 1;   // 100 x 10ms = 1s
+            }
+            else
+            {
+                arm_cnt = 0;
+                start_armed = 0;
+            }
+        }
+    }
     if(time_dl1b_on==1)
     {
          time_dl1b_s++;

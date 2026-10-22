@@ -12,6 +12,10 @@ uint32 time_dl1b_s;
 uint8 time_dl1b_on;
 uint8 mode_2024,tiaoguang;
 
+/* [2026-10-22] 发车布防：上电到 Stop_1 变 1 之间，先连续 1 秒确认前方 400mm 内没有遮挡，
+   才允许通过 time_dl1b_on 计时放行。防止 ToF 朝下/前方有杂物时，一上电就自己发车。 */
+volatile uint8 start_armed = 0;
+
 /*************************图像赛道数据****************************/
 uint16 Left_Line[61], Right_Line[61], Mid_Line[61]; // 原始左右边界数据
 uint16 Left_Add_Line[61], Right_Add_Line[61];       // 左右边界补线数据

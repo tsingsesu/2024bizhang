@@ -138,6 +138,9 @@ int core0_main(void)
         }
 #endif
         LuUI_Key();
+        /* [2026-10-22] 调试后门：长按 S1(KEY_MID) 强制发车，不依赖 ToF。
+           S1 在 LuUI_Key 里没有映射，不会和翻页/调参冲突。 */
+        if(key_get_state(KEY_MID) == KEY_LONG_PRESS) Stop_1 = 1;
         LuUI_Show();    // ★屏幕已确认可用（官方例程能亮）；坐标已核对不会触发 zf_assert
                         //   LuUI_Key() 必须保留（按键扫描在里面）
         //////感应发车/////////////
@@ -146,39 +149,19 @@ int core0_main(void)
         {
 
 
-            if(dl1b_distance_mm<201)
+            /* [2026-10-22] 发车条件加 start_armed：
+               上电后必须连续 1 秒确认前方无遮挡，才能用 time_dl1b_on 计时发车。
+               原来 ToF 读数一直 80~100mm 时，上电 5 秒就自己发车了。 */
+            if(start_armed)
             {
-                time_dl1b_on=1;
-            }
-            if(dl1b_distance_mm<400&&dl1b_distance_mm>200)
-            {
-
-                if(Differ_light >= 3) Differ_light -= 3;   // [2026-10-20] uint8: no wrap-around
-                // ★原来是 while(dl1b_distance_mm<=400); —— 会死等，主循环卡死
-                //   实测 DL1B 读数一直落在 216~287，正好卡在 200~400 区间，CPU0 主循环永远出不来。
-                //   现在改成不等待，靠后面 time_dl1b_s/time_dl1b 的计时逻辑判断发车。
-            }
-            // ★ 2 号 DL1B 已删除（V3.1 只有一个 ToF 座）——原来这段用 dl1b2_distance_mm 的发车逻辑已去掉
-            if(tiaoguang==1&&time_dl1b_s>300)
-            {
-                time_dl1b_on=0;
-                time_dl1b_s=0;
-                time_dl1b=0;
-                tiaoguang=0;
-                Differ_light+=8;
-            }
-            gpio_set_level(P02_4,1);//左前转向
-            gpio_set_level(P02_5,1);//左后转向
-            gpio_set_level(P02_6,1);//右前转向
-            gpio_set_level(P02_7,1);//右后转向
-            gpio_set_level(P20_11,1);//左前大灯
-            gpio_set_level(P20_12,1);//右前大灯
-            gpio_set_level(P20_13,1);//左后刹灯
-            gpio_set_level(P20_14,1);//右后刹灯
-            if(dl1b_distance_mm<400)
-            {
-                time_dl1b_on=1;
-
+                if(dl1b_distance_mm<201)
+                {
+                    time_dl1b_on=1;
+                }
+                if(dl1b_distance_mm<400)
+                {
+                    time_dl1b_on=1;
+                }
             }
 
             if(time_dl1b_s>500)
