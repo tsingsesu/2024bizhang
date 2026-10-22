@@ -479,7 +479,7 @@ void Parameter_Save(void)
     flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_INDEX);
     /* [2026-10-22] 同时存一份到第 17 页：现场调好的值先冻结住，
        以后把 PARAM_TUNING 改回 0 并核对无误，再从这里恢复正常读回。 */
-    if(flash_check(FLASH_SECTION_INDEX, FLASH_PAGE_BAK))
+    if(flash_check(FLASH_SECTION_INDEX, FLASH_PAGE_BAK) && EEPROM_PAGE_NUM > FLASH_PAGE_BAK)
         flash_erase_page(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
     flash_buffer_clear();
     flash_union_buffer[0].float_type = (float)zyuzhi;
@@ -489,7 +489,8 @@ void Parameter_Save(void)
     flash_union_buffer[5].float_type = (float)Steer_Trim;
     flash_union_buffer[6].float_type = (float)Steer_Mid;
     flash_union_buffer[4].float_type = 12345.0f;
-    flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
+    if(EEPROM_PAGE_NUM > FLASH_PAGE_BAK)
+        flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
 }
 void Parameter_Read(void)
 {
@@ -498,12 +499,15 @@ void Parameter_Read(void)
 #if PARAM_TUNING
     /* [2026-10-22] 调参阶段其它参数用代码默认值，但舵机中位是现场校准出来的，
        必须从 flash 恢复，否则每次上电都被打回 857。 */
+    if(EEPROM_PAGE_NUM > FLASH_PAGE_BAK)      /* [2026-10-22] 页号越界会触发 zf_assert */
+    {
     flash_buffer_clear();
     flash_read_page_to_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
     if(flash_union_buffer[4].float_type > 12300.0f && flash_union_buffer[4].float_type < 12400.0f)
     {
         float m = flash_union_buffer[6].float_type;
         if(m >= 700.0f && m <= 1000.0f) Steer_Mid = (int16)m;
+    }
     }
     return;
 #endif

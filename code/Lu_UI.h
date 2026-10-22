@@ -21,7 +21,8 @@ void LuUI_Log_Poll(void);
 
 #define FLASH_SECTION_INDEX       (0)
 #define FLASH_PAGE_INDEX          (11)
-#define FLASH_PAGE_BAK            (17)   // [2026-10-22] 调参备份页，见 Parameter_Save
+#define FLASH_PAGE_BAK            (10)   // [2026-10-22] 调参备份页，见 Parameter_Save
+                                          // [2026-10-22] 驱动只支持 0~11 页（EEPROM_PAGE_NUM=12），原来写 17 会触发 zf_assert
 #define PARAM_TUNING              (1)    // [2026-10-22] 1=上电不读 flash，用代码默认值；定稿后改 0
 /* [2026-10-22] 标线动作开关，日志里用 MK%s 显示；
    0 = 只记录（首次实测用）  1 = 真正减速/停车 */
