@@ -73,6 +73,9 @@ void core1_main(void)
         {
             binaryzation(Diedai(mt9v03x_image[0],COL,ROW));
             Image_Handle(*imagebinary);     // 图像处理
+            /* [2026-10-22] 标线扫描放在 Image_Handle 之后：
+               横道/菱形是白色，先扫会被边缘识别当成"赛道变宽"去补线。 */
+            Marker_Scan(*imagebinary);      // 2026 标线：人行横道 / 减速菱形
             Glare_Suppress(*imagebinary);   // [2026-10-20] reject reflection blobs
             Point_Control();      // 中点计算
             // ★原来清这个标志的是 LuUI_Show_page1() 里的那句 mt9v03x_finish_flag=0

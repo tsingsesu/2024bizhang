@@ -73,6 +73,66 @@ uint8 Light_Flag,Light_Flag1;
 uint8 agl_rejected_rows = 0;   // diag: rows rejected because white runs looked like glare
 uint8 agl_blob_pair     = 0;   // diag: rows that contained two glare-sized white runs
 
+/* ================= [2026-10-22] 2026 道路标线识别 ================= */
+/* 赛道是双车道 45cm，车在一条车道里跑，摄像头 120x70。
+   只看图像中央一条竖带（避开两侧边线和中线）：
+     - 人行横道：50cm 白条横跨车道，一行里白点很多，且有间隔地出现多行
+     - 减速菱形：车道中央的细白斜线，一行里白点很少，但连续出现很多行
+   行号 0 在最上面（远），59 在下面（近车头）。 */
+#define MARKER_EN               (1)
+#define MK_BAND_L               (36)    // 中央带左列
+#define MK_BAND_R               (84)    // 中央带右列
+#define MK_CW_ROW_MIN           (24)    // 一行白点数 >= 此值 = 白条行（人行横道/停车线）
+#define MK_CW_MIN_ROWS          (3)     // 至少要几行白条才判人行横道（停车线只有 1~2 行）
+#define MK_DIA_ROW_MIN          (2)     // 菱形行：白点数下限
+#define MK_DIA_ROW_MAX          (12)    // 菱形行：白点数上限（再就是横道/反光）
+#define MK_DIA_MIN_ROWS         (4)     // 至少几行才判菱形
+#define MK_CW_STOPLINE_ROW      (52)    // 近车头 52 行以后出现单条白线 = 停车线
+
+volatile uint8 mk_cw_seen = 0,  mk_cw_near  = 0, mk_cw_score  = 0;   // 人行横道
+volatile uint8 mk_dia_seen = 0, mk_dia_near = 0, mk_dia_score = 0;   // 减速菱形
+volatile uint8 mk_state = 0;                                        // 0空闲 1慢行 2停车计时 3已通过
+
+void Marker_Scan(uint8 *data)
+{
+    uint8 i, j, wc;
+    uint8 cw_rows = 0, dia_rows = 0;
+    uint8 cw_near = 0, dia_near = 0;
+
+    for(i = 8; i <= 58; i ++)
+    {
+        wc = 0;
+        for(j = MK_BAND_L; j <= MK_BAND_R; j ++)
+        {
+            if(data[i * COL + j]) wc ++;
+        }
+
+        if(wc >= MK_CW_ROW_MIN)                       // 整条白带 = 人行横道横条或停车线
+        {
+            cw_rows ++;
+            cw_near = i;
+        }
+        else if(wc >= MK_DIA_ROW_MIN && wc <= MK_DIA_ROW_MAX)   // 中央细白线 = 菱形轮廓
+        {
+            dia_rows ++;
+            dia_near = i;
+        }
+    }
+
+    mk_cw_score  = cw_rows;
+    mk_dia_score = dia_rows;
+    /* [2026-10-22] 停车线只有 1~2 行，不能当成人行横道，否则会提前 4~5 秒停车。
+       行号越大越靠近车头：近车头的白条数不足以判横道时，说明车已经到了停车线。 */
+    if(cw_rows >= 1 && cw_rows < MK_CW_MIN_ROWS && cw_near > MK_CW_STOPLINE_ROW)
+    {
+        cw_rows = MK_CW_MIN_ROWS;                 // 在停车线处也认定为"看到横道"
+    }
+    mk_cw_seen   = (cw_rows >= MK_CW_MIN_ROWS);
+    mk_dia_seen  = (dia_rows >= MK_DIA_MIN_ROWS && dia_rows <= 40);
+    mk_cw_near   = mk_cw_seen  ? cw_near  : 0;
+    mk_dia_near  = mk_dia_seen ? dia_near : 0;
+}
+
 static uint8 agl_run_limit(uint8 i)
 {
     return (i >= AGL_NEAR_ROW) ? AGL_RUN_NEAR : AGL_RUN_FAR;

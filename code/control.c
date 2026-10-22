@@ -125,7 +125,9 @@ void S3010_Control(void)
        Steering still works after the start (zebra stop keeps Flag_stop=1). */
     if(Stop_1 == 0)
     {
-        SD5_Duty = SteerMiddle;
+        /* [2026-10-22] 原来这里直接给 SteerMiddle，没带 Steer_Trim；
+           微调只在发车后生效，测车时看起来"调了没用"。 */
+        SD5_Duty = SteerMiddle + Steer_Trim;
     }
 #if STEER_LANE_FOLLOW
     /* [2026-10-20] lane following wins over the competition state machine */
@@ -292,6 +294,12 @@ void Motor_Control(void)
 *   计算终点位置
 *
 */
+/* [2026-10-22] 把 2026 标线常量放到函数外，避免在函数中间写 #define 污染后续代码。 */
+#define MK_DIA_SPEED_PCT    (50)      // 菱形处速度 = 原速的 50%
+#define MK_GAP_CM           (60)      // 菱形消失后再走多少 cm 恢复原速
+#define MK_STOP_TICKS       (1000)    // 停车 5 秒（5ms * 1000）
+#define MK_PARK_DUTY        (0)       // 停车时电机输出（0 = 自然滑停）
+
 void Point_Control(void)
 {
     float res;
@@ -403,9 +411,61 @@ void Control_Speed(void)
             RMotorSpeed = ramp_speed;
         }
     #endif
+
+    /* ================= [2026-10-22] 2026 标线：减速菱形 + 人行横道停车 =================
+       状态：0 空闲 -> 1 慢行(看到菱形) -> 2 停车计时(到人行横道) -> 3 已通过
+       只在该车放行后（Stop_1==1）才动作，避免上电摆车位置误触发。
+       本函数在 5ms 中断里跑，只能做简单计数。 */
+    if(Stop_1)
+    {
+        static uint16 mk_stop_cnt = 0;
+
+        if(mk_state == 0 && mk_dia_seen)                 // 见到菱形 -> 慢行
+        {
+            mk_state = 1;
+            Distance = 0;
+            Distance_ON = 1;
+        }
+        else if(mk_state == 1)                           // 慢行中
+        {
+            if(mk_cw_seen)                               // 先看到人行横道 -> 停车
+            {
+                mk_state = 2;
+                mk_stop_cnt = 0;
+            }
+            else if(!mk_dia_seen && Distance > MK_GAP_CM)// 菱形已过 -> 恢复原速
+            {
+                Distance = 0;
+                Distance_ON = 0;
+                mk_state = 0;
+            }
+        }
+        else if(mk_state == 2)                           // 停车计时 5 秒
+        {
+            if(++ mk_stop_cnt >= MK_STOP_TICKS)
+            {
+                mk_state = 3;
+                mk_stop_cnt = 0;
+                Distance = 0;
+                Distance_ON = 0;
+            }
+        }
+        else if(mk_state == 3)                           // 已通过，横道消失后回空闲
+        {
+            if(!mk_cw_seen) mk_state = 0;
+        }
+
+        if(mk_state == 1)
+        {
+            LMotorSpeed = LMotorSpeed * MK_DIA_SPEED_PCT / 100;
+            RMotorSpeed = RMotorSpeed * MK_DIA_SPEED_PCT / 100;
+        }
+        else if(mk_state == 2)
+        {
+            LMotorSpeed = RMotorSpeed = MK_PARK_DUTY;
+        }
+    }
 }
-
-
 
 //最小二乘法求散点拟合函数y=a+bx的参数a和b
 void Least_Sqaure_Method(float *Ka, float *Kb,uint8 start, uint8 end)

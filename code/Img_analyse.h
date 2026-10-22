@@ -95,6 +95,11 @@ extern uint32 Time_Count;
 extern int8 Out_Side;
 extern int8 Line_Count;
 extern uint8 Result_Far_Row;
+/* [2026-10-22] 2026 标线识别 */
+extern volatile uint8 mk_cw_seen, mk_cw_near, mk_cw_score;
+extern volatile uint8 mk_dia_seen, mk_dia_near, mk_dia_score;
+extern volatile uint8 mk_state;
+void Marker_Scan(uint8 *data);
 extern int16 Left_Max, Right_Min;
 extern uint16 Left_Line[61];
 extern uint16 Right_Line[61];
