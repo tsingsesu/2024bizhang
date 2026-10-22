@@ -92,6 +92,8 @@ int32 AD_Error;
 /***************************  电机控制变量 *******************************/
 volatile uint32 isr_tick_5ms = 0;
 int32   RSpeedPWM,LSpeedPWM;
+/* [2026-10-22] 发车后的绝对里程(cm)，不随标线状态机清零，用于日志里倒推行号-距离对照 */
+double Run_Odo = 0;
 uint8   Distance_ON = 0;         //默认关闭距离记录 用于行车过程的记录
 double  Distance;                //距离保存变量，勿动
 uint8   Distance_Test_ON = 0;  
@@ -203,6 +205,10 @@ void Motor_Control(void)
     {
         Distance += (DISTANCE( +(Rcount+Lcount)/2) );
     }
+    /* [2026-10-22] 前进才累计。发车后刚放开那几秒车可能还没起步（PID 爬坡），
+       或者被人往后退，这些都不算前进里程。 */
+    if(Stop_1 && ((int32)Rcount + (int32)Lcount) > 0)
+        Run_Odo += DISTANCE(((int32)Rcount + (int32)Lcount) / 2);   // 绝对里程(cm)
    // else  Distance = 0;
 
     
@@ -299,6 +305,10 @@ void Motor_Control(void)
 #define MK_GAP_CM           (60)      // 菱形消失后再走多少 cm 恢复原速
 #define MK_STOP_TICKS       (1000)    // 停车 5 秒（5ms * 1000）
 #define MK_PARK_DUTY        (0)       // 停车时电机输出（0 = 自然滑停）
+
+/* [2026-10-22] 0 = 标线状态机只记录、不改速度（首次跑场地实测用，车照常跑）
+   1 = 真正执行减速/停车。阈值调好后再改 1。 */
+#define MK_ACT_ENABLE       (0)
 
 void Point_Control(void)
 {
@@ -455,6 +465,7 @@ void Control_Speed(void)
             if(!mk_cw_seen) mk_state = 0;
         }
 
+#if MK_ACT_ENABLE
         if(mk_state == 1)
         {
             LMotorSpeed = LMotorSpeed * MK_DIA_SPEED_PCT / 100;
@@ -464,6 +475,9 @@ void Control_Speed(void)
         {
             LMotorSpeed = RMotorSpeed = MK_PARK_DUTY;
         }
+#else
+        (void)mk_stop_cnt;   /* 只记录模式：计时期照走，用于日志 */
+#endif
     }
 }
 

@@ -23,7 +23,7 @@ void LuUI_Log_Poll(void);
 #define FLASH_PAGE_INDEX          (11)
 #define FLASH_PAGE_BAK            (17)   // [2026-10-22] 调参备份页，见 Parameter_Save
 #define PARAM_TUNING              (1)    // [2026-10-22] 1=上电不读 flash，用代码默认值；定稿后改 0
-#define CAR_LOG_VERSION           (3)    // [2026-10-22] 每次改代码 +1；日志每行开头 V3，防止拿旧日志对错版本
+#define CAR_LOG_VERSION           (4)    // [2026-10-22] 每次改代码 +1；日志每行开头 V3，防止拿旧日志对错版本
 extern int8 RMotorSpeed1;
 extern int16 canshu_test[8];
 extern int8 FLAG1111;

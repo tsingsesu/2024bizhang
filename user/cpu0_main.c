@@ -122,7 +122,7 @@ int core0_main(void)
             /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 50 行左右边线与宽度；
                T0 = Diedai 实际二值阈值；zy = 阈值系数+偏置；dl = Differ_light；
                Rm = Rhombus_Flag；To = DL1B 距离 */
-            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d\r\n",
+            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d O=%d\r\n",
                 (int)CAR_LOG_VERSION,
                 (unsigned long)car_log_tick, (int)Point, (int)Line_Count, (int)Result_Far_Row,
                 (int)Left_Line[50], (int)Right_Line[50], (int)Width_Real[50],
@@ -132,7 +132,8 @@ int core0_main(void)
                 (int)diedai_img_min, (int)diedai_img_max, (int)diedai_img_avg,
                 (int)cam_set_exp_ret, (int)cam_set_gain_ret,
                 (int)mk_dia_seen, (int)mk_dia_near, (int)mk_dia_score,
-                (int)mk_cw_seen, (int)mk_cw_near, (int)mk_cw_score, (int)mk_state);
+                (int)mk_cw_seen, (int)mk_cw_near, (int)mk_cw_score, (int)mk_state,
+                (int)Run_Odo);
             wifi_spi_send_string(log_buf);
         }
 #endif
