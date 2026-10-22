@@ -36,6 +36,7 @@ void Computer_Show(void);
 void Parameter_Save(void);
 void cam_param_apply(void);
 extern uint16 cam_exposure;
+extern uint8 cam_set_exp_ret, cam_set_gain_ret;   // [2026-10-22] SCCB Ð´Èë½á¹û
 extern uint8  cam_gain;
 void Parameter_Read(void);
 void DisplayLine(uint16 *p, uint16 color);

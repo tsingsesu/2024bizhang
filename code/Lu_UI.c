@@ -38,10 +38,16 @@ int8 Differ = 13;    // ★实测调好的阈值偏移（原 0）
 uint16 cam_exposure = 1010;      // ★实测调好的曝光（原 500）
 uint8  cam_gain     = 44;      // ★实测调好的增益（原 63）          // ★默认增益（原 63 偏高，噪点大）
 
+/* [2026-10-22] 保存参数写入结果：0=成功 1=失败。
+   图像一直很暗时先看这两个值——如果是 1，说明 SCCB 写不进去，
+   调曝光增益根本没用，问题在摄像头通信/供电，不在参数。 */
+uint8 cam_set_exp_ret  = 0xFF;
+uint8 cam_set_gain_ret = 0xFF;
+
 void cam_param_apply(void)
 {
-    mt9v03x_set_exposure_time(cam_exposure);   // 命令 0xF0
-    mt9v03x_set_reg(0x35, cam_gain);           // MT9V034 Global Gain
+    cam_set_exp_ret  = mt9v03x_set_exposure_time(cam_exposure);   // 命令 0xF0
+    cam_set_gain_ret = mt9v03x_set_reg(0x35, cam_gain);           // MT9V034 Global Gain
 }
 
 /*************************************************************************
@@ -247,6 +253,8 @@ void LuUI_Show_page3(void)
     ips200_show_int(50,      Show_Y[6], diedai_img_min, 3);
     ips200_show_int(90,      Show_Y[6], diedai_img_max, 3);
     ips200_show_int(130,     Show_Y[6], diedai_img_avg, 3);
+    ips200_show_string(170, Show_Y[6], cam_set_exp_ret ? "E!" : "Eok");
+    ips200_show_string(200, Show_Y[6], cam_set_gain_ret ? "G!" : "Gok");
     ips200_show_string(16, Show_Y[5], "STrim");
     ips200_show_int(120, Show_Y[5], Steer_Trim, 4);   // 负号+3位=48px，120+48=168
 
