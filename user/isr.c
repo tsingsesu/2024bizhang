@@ -90,6 +90,25 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
          }
     }
 
+    /* [2026-10-22] 发车触发：连续遮挡 ToF 2 秒（300mm 内），松手立刻清零。
+       旧逻辑是累计 5 秒，手来回伸几次会叠加，触发时机不稳定。 */
+    {
+        static uint16 start_cnt = 0;
+        if(!Stop_1)
+        {
+            if(start_armed && dl1b_distance_mm < 300)
+            {
+                if(++ start_cnt >= 200) start_trigger = 1;   // 200 x 10ms = 2s
+            }
+            else
+            {
+                start_cnt = 0;
+                time_dl1b_s = 0;      // 旧计时也一起清，避免残留
+                time_dl1b   = 0;
+            }
+        }
+    }
+
 }
 
 IFX_INTERRUPT(cc61_pit_ch1_isr, 0, CCU6_1_CH1_ISR_PRIORITY)//10ms

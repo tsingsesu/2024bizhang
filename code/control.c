@@ -306,10 +306,6 @@ void Motor_Control(void)
 #define MK_STOP_TICKS       (1000)    // 停车 5 秒（5ms * 1000）
 #define MK_PARK_DUTY        (0)       // 停车时电机输出（0 = 自然滑停）
 
-/* [2026-10-22] 0 = 标线状态机只记录、不改速度（首次跑场地实测用，车照常跑）
-   1 = 真正执行减速/停车。阈值调好后再改 1。 */
-#define MK_ACT_ENABLE       (0)
-
 void Point_Control(void)
 {
     float res;

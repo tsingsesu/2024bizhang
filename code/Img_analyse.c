@@ -16,6 +16,10 @@ uint8 mode_2024,tiaoguang;
    才允许通过 time_dl1b_on 计时放行。防止 ToF 朝下/前方有杂物时，一上电就自己发车。 */
 volatile uint8 start_armed = 0;
 
+/* [2026-10-22] 发车触发：必须「连续」遮挡 ToF 2 秒。旧逻辑是累计 5 秒 + 累计 2 秒，
+   手来回伸几次时间会被加起来，触发时机看起来随机。松手立刻清零。 */
+volatile uint8 start_trigger = 0;
+
 /*************************图像赛道数据****************************/
 uint16 Left_Line[61], Right_Line[61], Mid_Line[61]; // 原始左右边界数据
 uint16 Left_Add_Line[61], Right_Add_Line[61];       // 左右边界补线数据

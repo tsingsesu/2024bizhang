@@ -64,6 +64,7 @@ extern uint8 time_dl1b_on;
 extern uint32 time_dl1b_s;
 extern uint8 mode_2024,tiaoguang;
 extern volatile uint8 start_armed;   // [2026-10-22] 发车布防（上电确认前方无障碍）
+extern volatile uint8 start_trigger;   // [2026-10-22] 连续遮挡 2 秒才发车
 
 extern uint8 Cycle_Flag,Lin_Flag,rhombus_Flag,Distance_Flag,rhombus_Flag1;
 extern uint8 Stadiometry_Flag1,Stadiometry_Flag2,Stdiometry_Flag3;
