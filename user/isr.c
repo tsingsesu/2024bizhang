@@ -74,48 +74,51 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
          4) 连续 1.5 秒满足才发车；手移开立刻清零
        8192 是通信超时的无效值，一律不参与判断。 */
     {
-        static uint16 tf_cnt   = 0;     // 采样计数（0~100 建基线，之后持续检测）
-        static uint32 tf_sum   = 0;     // 基线求和
-        static uint16 tf_valid = 0;     // 基线有效样本数
+        static uint16 tf_ema  = 0;     // 有效读数的慢滤波（~80ms 时间常数），代表"地面"距离
+        static uint8  tf_n    = 0;     // 连续有效读数计数
+        static uint16 tf_hold = 0;     // 连续遮挡计数
 
         if(!Stop_1)
         {
             uint16 d = dl1b_distance_mm;
-            uint8  valid = (d > 10 && d < 800);
+            uint8  valid = (d > 10 && d < 800);     // 8192/超时都不是有效读数
 
-            if(!start_ready)
+            if(!valid)
             {
-                /* 先等 1 秒让 ToF 初始化完成，再采 1 秒求基线 */
-                if(++ tf_cnt > 100)
-                {
-                    if(valid)
-                    {
-                        tf_sum += d;
-                        tf_valid ++;
-                    }
-                    if(tf_cnt >= 200)
-                    {
-                        start_base  = (tf_valid > 50) ? (uint16)(tf_sum / tf_valid) : 0;
-                        start_ready = 1;
-                        start_hold  = 0;
-                    }
-                }
+                /* [2026-10-22] ToF 上电后要好几秒才有有效读数（日志实测约 9 秒）。
+                   这段时间什么都不能判，更不能把"没有数据"当成"前方空旷"。 */
+                tf_n = 0;
+                tf_hold = 0;
             }
             else
             {
-                uint8 blocked;
-                if(start_base == 0) blocked = valid;                    // 空旷：出现有效读数
-                else blocked = valid && ((uint32)d * 4 < (uint32)start_base * 3);  // 比基线近 25%
-
-                if(blocked)
+                /* 前 0.5 秒只用来建立滤波初值，不做判断 */
+                if(tf_n < 50)
                 {
-                    if(++ start_hold >= 150) start_trigger = 1;         // 1.5 秒
+                    tf_n ++;
+                    tf_ema = (1 == tf_n) ? d : (uint16)(((uint32)tf_ema * 7 + d) / 8);
+                    tf_hold = 0;
                 }
                 else
                 {
-                    start_hold = 0;
+                    tf_ema = (uint16)(((uint32)tf_ema * 7 + d) / 8);
+                    /* [2026-10-22] 遮挡判据：读数突然掉到慢滤波值的一半以下。
+                       地面读数是缓慢变化的噪声（日志里 45~130），不会在 0.8 秒内
+                       持续低于自身滤波值的一半；手/纸板挡在光束里会。 */
+                    if(((uint32)d * 2) < (uint32)tf_ema)
+                    {
+                        if(++ tf_hold >= 80) start_trigger = 1;    // 0.8 秒
+                    }
+                    else
+                    {
+                        tf_hold = 0;
+                    }
                 }
             }
+
+            start_ready = (tf_n >= 50);
+            start_base  = tf_ema;       // 日志里看当前基线
+            start_hold  = tf_hold;
         }
     }
 

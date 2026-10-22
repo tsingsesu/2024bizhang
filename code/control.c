@@ -150,6 +150,10 @@ void S3010_Control(void)
            (0 == Point) || (Point <= 6) || (Point >= (MT9V03X_W - 6)) ||
            (Width_Real[50] < 20) || (Width_Real[50] > 70) ||
            (Width_Real[40] < 20) || (Width_Real[40] > 70) ||   // 两行都合理才信任，单行噪声大
+           /* [2026-10-22] 边线贴在图像边上 = 扫描碰边界，根本没找到线。
+              日志里 L=1 时宽度仍然"合理"，P 却被拉到 19，舵机直接打到 915。 */
+           (Left_Line[50] <= 2) || (Right_Line[50] >= (MT9V03X_W - 3)) ||
+           (Left_Line[40] <= 2) || (Right_Line[40] >= (MT9V03X_W - 3)) ||
            (Result_Far_Row < STEER_MIN_VALID_ROWS))
             SD5_Duty = SteerMiddle + Steer_Trim;                 // ★没线时也带微调
         else
