@@ -74,51 +74,51 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
          4) 连续 1.5 秒满足才发车；手移开立刻清零
        8192 是通信超时的无效值，一律不参与判断。 */
     {
-        static uint16 tf_ema  = 0;     // 有效读数的慢滤波（~80ms 时间常数），代表"地面"距离
-        static uint8  tf_n    = 0;     // 连续有效读数计数
-        static uint16 tf_hold = 0;     // 连续遮挡计数
+        static uint16 tf_ema   = 0;    // 有效读数的慢滤波（代表"地面/前方"距离）
+        static uint8  tf_n     = 0;    // 连续有效读数计数（用于建立初值）
+        static uint16 tf_win   = 0;    // 1 秒窗口计数
+        static uint16 tf_hits  = 0;    // 窗口内"比基线近 10mm"的帧数
 
         if(!Stop_1)
         {
             uint16 d = dl1b_distance_mm;
-            uint8  valid = (d > 10 && d < 800);     // 8192/超时都不是有效读数
+            uint8  valid = (d > 10 && d < 800);     // 8192 = 超时 / 低于最小量程
 
-            if(!valid)
+            if(tf_n < 50)
             {
-                /* [2026-10-22] ToF 上电后要好几秒才有有效读数（日志实测约 9 秒）。
-                   这段时间什么都不能判，更不能把"没有数据"当成"前方空旷"。 */
-                tf_n = 0;
-                tf_hold = 0;
-            }
-            else
-            {
-                /* 前 0.5 秒只用来建立滤波初值，不做判断 */
-                if(tf_n < 50)
+                /* 前 0.5 秒：用有效读数建立滤波初值，不做判断 */
+                if(valid)
                 {
                     tf_n ++;
                     tf_ema = (1 == tf_n) ? d : (uint16)(((uint32)tf_ema * 7 + d) / 8);
-                    tf_hold = 0;
                 }
-                else
+            }
+            else
+            {
+                if(valid)
                 {
                     tf_ema = (uint16)(((uint32)tf_ema * 7 + d) / 8);
-                    /* [2026-10-22] 遮挡判据：读数比平滑基线近 15mm 以上，持续 1 秒。
-                       实测地面读数 ~45-55，手挡上去降到 ~27-35，差 15mm 能可靠区分；
-                       原来要求「掉到一半以下」太严，手挡上去只降 40%，永远不够。 */
-                    if((uint16)(d + 15) < tf_ema)
-                    {
-                        if(++ tf_hold >= 100) start_trigger = 1;   // 1.0 秒
-                    }
-                    else
-                    {
-                        tf_hold = 0;
-                    }
+                }
+
+                /* [2026-10-22] 用 1 秒窗口做多数表决，而不是要求 100 帧连续满足。
+                   日志里 To 在 27~50 之间跳、还夹着 8192，连续判据永远凑不满；
+                   手挡上去时绝大多数帧会低于基线，用比例判断更稳。 */
+                if(++ tf_win >= 100)
+                {
+                    if(tf_hits >= 70) start_trigger = 1;     // 1 秒内 70% 的帧变近
+                    tf_win  = 0;
+                    tf_hits = 0;
+                }
+                /* 比基线近 10mm 以上；8192 视为"更近"（低于最小量程也可能是手贴上去） */
+                if(valid ? ((uint16)(d + 10) < tf_ema) : 1)
+                {
+                    tf_hits ++;
                 }
             }
 
             start_ready = (tf_n >= 50);
-            start_base  = tf_ema;       // 日志里看当前基线
-            start_hold  = tf_hold;
+            start_base  = tf_ema;
+            start_hold  = tf_hits;
         }
     }
 
