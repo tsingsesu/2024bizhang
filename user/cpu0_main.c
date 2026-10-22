@@ -39,7 +39,7 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (15)
+#define CAR_LOG_VERSION           (16)
 /* [2026-10-22] 发车方式
    0 = 仅长按 S1（当前，推荐）：ToF 装在低位、一直读地面 44~130mm，
        8192 还是通信超时的无效值，用它发车会一上电就自己跑
@@ -83,7 +83,7 @@ int core0_main(void)
    clock_init();                   // 获取时钟频率<务必保留>
    /* [2026-10-22] 时钟一好就输出舵机中位，再去做延时/串口/WiFi。
       原来 1.5 秒延时在舵机初始化之前，这段时间信号线悬空，舵机没有保持力会被拽到一边。 */
-   pwm_init(S_MOTOR_PIN, 50, SteerMiddle);
+   pwm_init(S_MOTOR_PIN, 50, Steer_Mid);
    gpio_init(MOTOR1_A, GPO, GPIO_LOW, GPO_PUSH_PULL);
    gpio_init(MOTOR2_A, GPO, GPIO_LOW, GPO_PUSH_PULL);
    pwm_init(MOTOR1_B, 17000, 0);
@@ -107,6 +107,8 @@ int core0_main(void)
     // 此处编写用户代码 例如外设初始化代码等
     System();
     Parameter_Read();      // ★从 flash 读上次保存的参数（没存过就用默认）
+    /* [2026-10-22] 读回校准过的舵机中位后，立刻把 PWM 更新到新值 */
+    SteerSet(Steer_Mid);
     cam_param_apply();     // ★让默认/读回的曝光增益真正写进相机
     // 此处编写用户代码 例如外设初始化代码等
     cpu_wait_event_ready();         // 等待所有核心初始化完毕

@@ -74,6 +74,10 @@ static uint8 agl_point_median(uint8 v)
 uint8    Point_Left = 43;//43
 uint8    Point_Right = 37;//37
 int32    SD5_Duty =  SteerMiddle;
+/* [2026-10-22] 舵机中位改成运行时变量：上电默认 SteerMiddle（代码里的标定值），
+   掉电保存在 flash 第 17 页；page3 上可以用 S3/S4 现场微调，不用重新编译。
+   注意：拉杆/舵机臂重新装过之后，857 就不再是中位了，必须重新校准。 */
+int16    Steer_Mid = SteerMiddle;
 int16    Steer_Trim = 4;      // ★转向微调：正值往左，负值往右
 uint8    showpoint[2] = {0};
 uint16   Speed_max = 150,Speed_min = 20;
@@ -129,7 +133,7 @@ void S3010_Control(void)
     {
         /* [2026-10-22] 原来这里直接给 SteerMiddle，没带 Steer_Trim；
            微调只在发车后生效，测车时看起来"调了没用"。 */
-        SD5_Duty = SteerMiddle + Steer_Trim;
+        SD5_Duty = Steer_Mid + Steer_Trim;
     }
 #if STEER_LANE_FOLLOW
     /* [2026-10-20] lane following wins over the competition state machine */
@@ -155,7 +159,7 @@ void S3010_Control(void)
            (Left_Line[50] <= 2) || (Right_Line[50] >= (MT9V03X_W - 3)) ||
            (Left_Line[40] <= 2) || (Right_Line[40] >= (MT9V03X_W - 3)) ||
            (Result_Far_Row < STEER_MIN_VALID_ROWS))
-            SD5_Duty = SteerMiddle + Steer_Trim;                 // ★没线时也带微调
+            SD5_Duty = Steer_Mid + Steer_Trim;                   // ★没线时也带微调
         else
         {
             int32 duty = range_protect(PlacePID_Control(&Point_PID, Point_Mid, Point), Pwm_Min, Pwm_Max);

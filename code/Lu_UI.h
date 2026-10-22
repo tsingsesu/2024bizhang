@@ -39,6 +39,7 @@ void Computer_Show(void);
 void Parameter_Save(void);
 void cam_param_apply(void);
 extern uint16 cam_exposure;
+extern uint8 steer_mid_cal;   // [2026-10-22] 舵机中位校准模式
 extern uint8 cam_set_exp_ret, cam_set_gain_ret;   // [2026-10-22] SCCB 写入结果
 extern uint8  cam_gain;
 void Parameter_Read(void);

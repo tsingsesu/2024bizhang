@@ -19,7 +19,7 @@ void System()
     gpio_init(MOTOR2_A, GPO, GPIO_HIGH, GPO_PUSH_PULL);
     pwm_init(MOTOR2_B, 17000, 0);
 
-    pwm_init(ATOM1_CH1_P33_9,50,SteerMiddle); // 舵机初始化
+    pwm_init(ATOM1_CH1_P33_9,50,Steer_Mid); // 舵机初始化
     //编码器初始化
     encoder_quad_init(ENCODER1_TIM,ENCOEDER1_CH1,ENCOEDER1_CH2);
     encoder_quad_init(ENCODER2_TIM,ENCOEDER2_CH1,ENCOEDER2_CH2);

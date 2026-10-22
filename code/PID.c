@@ -30,7 +30,7 @@ int32 PlacePID_Control(PID *sprt, int32 NowPiont, int32 SetPoint)
         sprt->KD = 160/100.0*sprt->KP;      //   230
      Actual = sprt->KP*iError + sprt->KD * (iError - sprt->LastError);
      sprt->LastError = iError;      //更新上次误差
-     return SteerMiddle - Actual;
+     return Steer_Mid - Actual;   // [2026-10-22] 用可校准的中位
 }
 
 

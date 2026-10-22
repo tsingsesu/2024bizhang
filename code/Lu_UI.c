@@ -36,7 +36,9 @@ int8 Differ = 13;    // ★实测调好的阈值偏移（原 0）
 // 曝光：MT9V03X_EXP_TIME_DEF 默认 500，范围约 50~2000，越大越亮
 // 增益：MT9V034 全局增益寄存器 0x35，范围 16~64，越大越亮（噪点也越多）
 uint16 cam_exposure = 1010;      // ★实测调好的曝光（原 500）
-uint8  cam_gain     = 44;      // ★实测调好的增益（原 63）          // ★默认增益（原 63 偏高，噪点大）
+uint8  cam_gain     = 44;
+
+uint8 steer_mid_cal = 0;   // [2026-10-22] 1 = 舵机中位校准模式（长按 S2 切换）      // ★实测调好的增益（原 63）          // ★默认增益（原 63 偏高，噪点大）
 
 /* [2026-10-22] 保存参数写入结果：0=成功 1=失败。
    图像一直很暗时先看这两个值——如果是 1，说明 SCCB 写不进去，
@@ -255,6 +257,10 @@ void LuUI_Show_page3(void)
     ips200_show_int(130,     Show_Y[6], diedai_img_avg, 3);
     ips200_show_string(170, Show_Y[6], cam_set_exp_ret ? "E!" : "Eok");
     ips200_show_string(200, Show_Y[6], cam_set_gain_ret ? "G!" : "Gok");
+    /* [2026-10-22] 实时舵机中位（可现场校准，见 S2 长按） */
+    ips200_show_string(16,  Show_Y[5], "SMid");
+    ips200_show_int(60,     Show_Y[5], Steer_Mid, 4);
+    ips200_show_string(120, Show_Y[5], "Trm");
     ips200_show_string(16, Show_Y[5], "STrim");
     ips200_show_int(120, Show_Y[5], Steer_Trim, 4);   // 负号+3位=48px，120+48=168
 
@@ -297,10 +303,41 @@ void LuUI_Key(void)
         Key_Protect[KEY_UP] = 0;
     }
 
+    // ---------- ★长按 S2 : 进入/退出舵机中位校准 ----------
+    /* [2026-10-22] 拉杆/舵机臂重新装过之后，代码里的 857 不再是中位。
+       进入校准后：L = S3/S4（每下 2），R = S5（每下 1），长按 S5 保存到 flash。
+       先进入 page3 再长按 S2。 */
+    {
+        extern uint8 steer_mid_cal;
+        static uint8 cal_done = 0;
+        if(key_get_state(KEY_UP) == KEY_LONG_PRESS)
+        {
+            if(0 == cal_done)
+            {
+                steer_mid_cal = steer_mid_cal ? 0 : 1;
+                Page_Clear_flag = 1;
+                cal_done = 1;
+            }
+        }
+        else
+        {
+            cal_done = 0;
+        }
+    }
+
     // ---------- S5 : 切换要调的变量 ----------
     if(key_get_state(KEY_RIGHT)==KEY_SHORT_PRESS && Key_Protect[KEY_RIGHT]==0)
     {
-        if(Page_Choose_flag == 2)
+        extern uint8 steer_mid_cal;
+        if(steer_mid_cal)
+        {
+            int16 v = Steer_Mid + 1;
+            if(v > 1000) v = 1000;
+            Steer_Mid = v;
+            SteerSet(Steer_Mid);
+            Page_Clear_flag = 1;
+        }
+        else if(Page_Choose_flag == 2)
         {
             Parameter_Choose_flag ++;
             if(Parameter_Choose_flag > 4) Parameter_Choose_flag = 0;   // 0=zyuzhi 1=Differ 2=曝光 3=增益 4=转向
@@ -316,7 +353,14 @@ void LuUI_Key(void)
     // ---------- S3 : 减小 ----------
     if(key_get_state(KEY_DOWN)==KEY_SHORT_PRESS && Key_Protect[KEY_DOWN]==0)
     {
-        if(Page_Choose_flag == 2)
+        if(steer_mid_cal)
+        {
+            int16 v = Steer_Mid - 2;
+            if(v < 700) v = 700;
+            Steer_Mid = v;
+            SteerSet(Steer_Mid);
+        }
+        else if(Page_Choose_flag == 2)
         {
             switch(Parameter_Choose_flag)
             {
@@ -337,7 +381,14 @@ void LuUI_Key(void)
     // ---------- S4 : 增大 ----------
     if(key_get_state(KEY_LEFT)==KEY_SHORT_PRESS && Key_Protect[KEY_LEFT]==0)
     {
-        if(Page_Choose_flag == 2)
+        if(steer_mid_cal)
+        {
+            int16 v = Steer_Mid + 2;
+            if(v > 1000) v = 1000;
+            Steer_Mid = v;
+            SteerSet(Steer_Mid);
+        }
+        else if(Page_Choose_flag == 2)
         {
             switch(Parameter_Choose_flag)
             {
@@ -423,6 +474,7 @@ void Parameter_Save(void)
     flash_union_buffer[2].float_type = (float)cam_exposure;
     flash_union_buffer[3].float_type = (float)cam_gain;
     flash_union_buffer[5].float_type = (float)Steer_Trim;
+    flash_union_buffer[6].float_type = (float)Steer_Mid;    // [2026-10-22] 舵机中位
     flash_union_buffer[4].float_type = 12345.0f;          // ★有效标记
     flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_INDEX);
     /* [2026-10-22] 同时存一份到第 17 页：现场调好的值先冻结住，
@@ -435,6 +487,7 @@ void Parameter_Save(void)
     flash_union_buffer[2].float_type = (float)cam_exposure;
     flash_union_buffer[3].float_type = (float)cam_gain;
     flash_union_buffer[5].float_type = (float)Steer_Trim;
+    flash_union_buffer[6].float_type = (float)Steer_Mid;
     flash_union_buffer[4].float_type = 12345.0f;
     flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
 }
@@ -443,6 +496,15 @@ void Parameter_Read(void)
     /* [2026-10-22] PARAM_TUNING=1（见 Lu_UI.h）：本阶段不读 flash，
        始终用代码里的默认值。比赛定稿后改回 0。 */
 #if PARAM_TUNING
+    /* [2026-10-22] 调参阶段其它参数用代码默认值，但舵机中位是现场校准出来的，
+       必须从 flash 恢复，否则每次上电都被打回 857。 */
+    flash_buffer_clear();
+    flash_read_page_to_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
+    if(flash_union_buffer[4].float_type > 12300.0f && flash_union_buffer[4].float_type < 12400.0f)
+    {
+        float m = flash_union_buffer[6].float_type;
+        if(m >= 700.0f && m <= 1000.0f) Steer_Mid = (int16)m;
+    }
     return;
 #endif
     float z, d, e, g, mark;
