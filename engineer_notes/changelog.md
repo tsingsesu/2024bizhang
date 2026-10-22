@@ -16,7 +16,8 @@
 | `code/Lu_UI.c` | page1 的 `Flag_stop` 从 `show_float(...,4,4)` 改成 `show_int(...,3)`，`Flag_turn` 挪到 Show_Y[7] | page3 加了 STrim 一行后最下面 y 超屏；同时避开 show_float 的 18 字符宽度（150 + 18*8 = 294 > 232 会断言） |
 | `code/Lu_UI.c` | page3 STrim 显示 x 150→120；按键范围 ±60；恢复默认时 `Steer_Trim=0` | 与 flash 校验范围一致，负号+3位也不会顶出屏幕 |
 | `code/Lu_UI.c` | `Differ` 按键范围限到 ±50 | 与 `Parameter_Read()` 的校验范围一致，否则存进去读回来会被丢掉 |
-| `bizhang_1108\tools\car_log.py` | 新增电脑端 UDP 日志接收器 | 按 `\n` 切行、自动拼包、显示时间戳和来源 IP |
+| `user/cpu0_main.c` | `CAMERA_SEND_ENABLE` 1→**0** | 逐飞助手图传和 UDP 日志共用同一条连接会串数据；调参看电脑端日志优先，要看图再切回 |
+| `tools/car_log.py` | 新增电脑端 UDP 日志接收器 | 按 `\n` 切行、自动拼包、显示时间戳和来源 IP |
 
 **新增脚手架**
 
