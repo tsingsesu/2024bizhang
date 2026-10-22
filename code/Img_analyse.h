@@ -94,6 +94,7 @@ extern uint32 Time_Count;
 //外部变量声明
 extern int8 Out_Side;
 extern int8 Line_Count;
+extern uint8 Result_Far_Row;
 extern int16 Left_Max, Right_Min;
 extern uint16 Left_Line[61];
 extern uint16 Right_Line[61];

@@ -28,6 +28,7 @@ uint8 Left_Line_Break, Right_Line_Break;   //  左右 边界线 断点
 
 int8 Out_Side = 0;  // 丢线控制
 int8 Line_Count;        // 记录成功识别到的赛道行数
+uint8 Result_Far_Row = 59;   // [2026-10-22] 本帧最远可信行（整帧没线时贴近 5）
 
 int Count=0;
 uint8 Last_Point;
@@ -482,6 +483,22 @@ void Image_Handle(uint8 *data)
         Line_Repair(Right_Add_Start, Right_Add_Stop, data, Right_Line, Right_Add_Line, Right_Add_Flag, 2);
     }
     /*************************** 第二轮补线修复结束 ***************************/
+    /* [2026-10-22] 「整帧没找到线」也要拦住。扫描循环遇到连续黑行就 break，
+       Line_Count 会停在最后成功的那一行，最坏情况停在 59；舵机那边只拦
+       Line_Count < 40，于是会拿一帧残缺的中线去算舵机（日志里 P=2、LC=59、
+       duty 直接打到 915 就是这种情况）。这里记下本帧还看得见的最远行。 */
+    {
+        uint8 k;
+        Result_Far_Row = 59;
+        for(k = 59; k > 5; k --)
+        {
+            if(Width_Real[k] >= 3 && Width_Real[k] < (COL - 6))
+            {
+                Result_Far_Row = k;
+                break;
+            }
+        }
+    }
     for (i = 59; i >= Line_Count;)   // 重新计算 中值
     {
         i =i-1;
@@ -500,6 +517,12 @@ void Image_Handle(uint8 *data)
 //        Flag_stop = 0;
 //        Deal_Flag=1;
 //    }
+    /* [2026-10-22] 2024 赛道的运动状态机：菱形、斑马线、Turn_Left/Turn_Right。
+       它现在一上电就被 ToF 发车逻辑自动拉起来（Flag_stop=7, Flag_turn=3），
+       而这套菱形/单车道逻辑不是 2026 双车道赛道，会把基础循迹搅乱。
+       先整体关掉，纯跟线；以后重做标线时改 MOTION_2024_ENABLE=1 或写新的。 */
+#define MOTION_2024_ENABLE    (0)
+#if MOTION_2024_ENABLE
     if(tiaoguang==1)
         {
             Tiao_Light(data);
@@ -670,6 +693,7 @@ void Image_Handle(uint8 *data)
                 default:break;
                 }
         }
+#endif
 
 //8.6
 

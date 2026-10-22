@@ -383,7 +383,7 @@ void LuUI_Key(void)
         {
             if(0 == reset_done)
             {
-                zyuzhi       = 109;
+                zyuzhi       = 63;   // [2026-10-22] 跟默认值一致
                 Differ       = 13;
                 Steer_Trim   = 0;    // [2026-10-22] 恢复默认时转向也要回 0
                 cam_exposure = 1010;

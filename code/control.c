@@ -135,8 +135,9 @@ void S3010_Control(void)
            process.  Small values mean the fit only has a few rows and is
            numerically unreliable; the old test (>=58) let those through and
            the PID then steered on garbage.  Require a solid row band. */
-        if((0 == Point) || (Line_Count < STEER_MIN_VALID_ROWS) ||
-           (Line_Count >= STEER_NO_LINE_LINECOUNT))
+        /* [2026-10-22] Line_Count 是 break 时的行号、不是有效行数（最坏停在 59），
+           整帧没线时会放行残缺中线。改用本帧最远可信行 Result_Far_Row。 */
+        if((0 == Point) || (Result_Far_Row < STEER_MIN_VALID_ROWS))
             SD5_Duty = SteerMiddle + Steer_Trim;                 // ★没线时也带微调
         else
         {

@@ -89,7 +89,7 @@ uint8   imagen[ROW][COL];
    With the OLD broken Diedai() the effective threshold was ~89 because 0/0
    gave T0=255 and then x0.35.  Now Otsu works, so 35 would mean 0.35*Otsu
    (~35) and the whole floor turns white.  100 restores the old brightness. */
-uint8 zyuzhi = 109,Differ_light;   // ★实测调好的阈值系数（原 53）
+uint8 zyuzhi = 63,Differ_light;    // [2026-10-22] 默认阈值系数 63（原 109）
 uint8 diedai_threshold = 0;     // [2026-10-20] diag: final threshold of Diedai()
 // 需要配置到摄像头的数据 不允许在这修改参数
 static int16 mt9v03x_set_confing_buffer[MT9V03X_CONFIG_FINISH][2]=

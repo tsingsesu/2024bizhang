@@ -52,7 +52,7 @@ uint8 cam_send_raw = 1;
 // 1 = 通过 WiFi 向电脑发日志（电脑端跑 tools/car_log.py 接收）
 // 0 = 关掉，比赛时可以关
 #define CAR_LOG_ENABLE          (1)
-#define CAR_LOG_PERIOD_LOOPS    (60)      // 每 N 圈主循环发一条心跳
+#define CAR_LOG_PERIOD_LOOPS    (10)      // 每 N 圈主循环发一条（一次发送约 250ms）
 static uint16 car_log_cnt  = 0;
 static uint32 car_log_tick = 0;
 
@@ -115,12 +115,18 @@ int core0_main(void)
         // ★心跳：每 CAR_LOG_PERIOD_LOOPS 圈发一行关键量，电脑端 car_log.py 里看
         if(++ car_log_cnt >= CAR_LOG_PERIOD_LOOPS)
         {
-            char log_buf[96];
+            char log_buf[160];
             car_log_cnt = 0;
             car_log_tick ++;
-            sprintf(log_buf, "T=%lu P=%d LC=%d duty=%ld st=%d/%d trim=%d\r\n",
-                (unsigned long)car_log_tick, (int)Point, (int)Line_Count,
-                (long)SD5_Duty, (int)Flag_stop, (int)Flag_turn, (int)Steer_Trim);
+            /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 50 行左右边线与宽度；
+               T0 = Diedai 实际二值阈值；zy = 阈值系数+偏置；dl = Differ_light；
+               Rm = Rhombus_Flag；To = DL1B 距离 */
+            sprintf(log_buf, "T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d\r\n",
+                (unsigned long)car_log_tick, (int)Point, (int)Line_Count, (int)Result_Far_Row,
+                (int)Left_Line[50], (int)Right_Line[50], (int)Width_Real[50],
+                (long)SD5_Duty, (int)Flag_stop, (int)Flag_turn, (int)Rhombus_Flag,
+                (int)diedai_threshold, (int)zyuzhi + (int)Differ_light, (int)Differ_light,
+                (int)dl1b_distance_mm, (int)cam_exposure, (int)cam_gain);
             wifi_spi_send_string(log_buf);
         }
 #endif
