@@ -39,7 +39,7 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (23)   // [2026-10-26] 22->23：日志末尾加 SO= A= R=
+#define CAR_LOG_VERSION           (24)   // V24: straight-following and final-stop diagnostics
 /* [2026-10-22] 发车方式
    0 = 不自动发车，只能人工放行（调试用；板上只有 S2~S5，没有 S1）
    1 = ToF 遮挡发车（当前，比赛要求非接触发车） */
@@ -66,6 +66,7 @@ uint8 cam_send_raw = 1;
 static uint16 car_log_cnt  = 0;
 static uint32 car_log_tick = 0;
 
+extern uint8 end_stopped;
 extern uint16 steer_guard_bits;
 extern int32  steer_target;
 extern volatile uint32 isr_tick_5ms;
@@ -86,7 +87,8 @@ static seekfree_assistant_camera_struct camera_information;
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU0的RAM中
 
 volatile uint32 main_loop_tick = 0;
-volatile uint8 steer_settle = 0;   // [2026-10-22] 1 = 起跑后仍在中位保护期
+volatile uint32 vision_processed_frames = 0;
+volatile uint8 steer_settle = 1;   // [2026-10-22] 1 = 起跑后仍在中位保护期
 
 int core0_main(void)
 {
@@ -152,13 +154,13 @@ int core0_main(void)
         // ★心跳：每 CAR_LOG_PERIOD_LOOPS 圈发一行关键量，电脑端 car_log.py 里看
         if(++ car_log_cnt >= CAR_LOG_PERIOD_LOOPS)
         {
-            char log_buf[400];   // [2026-10-26] 320->400：又加了 SO/A 两个字段，实测最长 289 字符，留足余量，防止 sprintf 溢出
+            static char log_buf[1024];   // CPU0 stack is 2 KB; keep telemetry storage off the stack.
             car_log_cnt = 0;
             car_log_tick ++;
-            /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 50 行左右边线与宽度；
+            /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 22 行左右边线与宽度；
                T0 = Diedai 实际二值阈值；zy = 阈值系数+偏置；dl = Differ_light；
                Rm = Rhombus_Flag；To = DL1B 距离 */
-            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d GB=0x%04X TP=%ld FC=%lu H128=%lu H192=%lu CN=%d/%d/%d CWD=%d/%d/%d/%d/%d SO=%d A=%d R=%d\r\n",
+            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d GB=0x%04X TP=%ld FC=%lu H128=%lu H192=%lu CN=%d/%d/%d CWD=%d/%d/%d/%d/%d SO=%d A=%d R=%d SM=%d RT=%ld LK=%d MS=%lu PC=%lu VS=%ld/%ld VE=%d/%d VP=%ld/%ld ES=%d FS=%d\r\n",
                 (int)CAR_LOG_VERSION,
                 (unsigned long)car_log_tick, (int)Point, (int)Line_Count, (int)Result_Far_Row,
                 (int)Left_Line[22], (int)Right_Line[22], (int)Width_Real[22],
@@ -174,18 +176,18 @@ int core0_main(void)
                 (int)cone_cnt, (int)cone_near, (int)cone_x,
                 (int)cone_wh[0], (int)cone_wh[1], (int)cone_wh[2],
                 (int)cone_wh[3], (int)cone_wh[4],
-                 (int)stop_latch, (int)stop_aaa, (int)stop_run);
+                 (int)stop_latch, (int)stop_aaa, (int)stop_run,
+                 (int)steer_mode, (long)steer_raw_target, (int)lane_k,
+                 (unsigned long)(isr_tick_5ms * 5UL), (unsigned long)vision_processed_frames,
+                 (long)LMotorSpeed, (long)RMotorSpeed,
+                 (int)Lrealspeed, (int)Rrealspeed,
+                 (long)LSpeedPWM, (long)RSpeedPWM,
+                 (int)end_stopped, (int)MK_FINAL_STOP);
             wifi_spi_send_string(log_buf);
         }
 #endif
         LuUI_Key();
-        /* [2026-10-22] 起跑后的 1 秒内舵机保持中位，等摄像头曝光稳定，
-           避免用过曝/全黑的垃圾图像把舵机顶到极限。 */
-        {
-            static uint16 start_settle = 0;
-            if(Stop_1 && start_settle < 15) start_settle ++;   // 50 x 20ms ≈ 1s
-            steer_settle = (start_settle < 15);
-        }
+        /* Startup centering is timed in the 5 ms steering ISR. */
         LuUI_Show();    // ★屏幕已确认可用（官方例程能亮）；坐标已核对不会触发 zf_assert
                         //   LuUI_Key() 必须保留（按键扫描在里面）
         //////感应发车/////////////

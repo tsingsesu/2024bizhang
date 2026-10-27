@@ -6,6 +6,10 @@
 extern int32 RSpeedPWM,LSpeedPWM;
 
 extern uint16 Pwm_Max,Pwm_Min;
+extern uint8 steer_mode;
+extern int32 steer_raw_target;
+extern int16 lane_k;
+extern volatile uint32 vision_processed_frames;
 extern int16 Steer_Trim;   // [2026-10-22] 转向微调，正值往左
 extern int16 Steer_Mid;    // [2026-10-22] 运行时舵机中位（掉电保存）
 void Steer_Set_Mid(int16 m);   // [2026-10-22] 设中位并同步左右限幅

@@ -21,6 +21,10 @@
    中间，抖动一下就在两种算法之间切换，目标点单次最大跳 92px。
    所以 >85 才进"整条路"，<60 才回"单道"，中间保持上一次的状态。 */
 #define STEER_WIDE_ON        (85)    /* 超过它 → 认为扫到了整条路 */
+#define STEER_STRAIGHT_RANGE  (10)    /* Normal following: bounded correction, not a lane change. */
+#define STEER_TARGET_STEP     (1)     /* Max target movement per 5 ms control tick. */
+#define STEER_START_TICKS     (200)   /* 1 second, timed by the steering ISR. */
+#define CONE_CONFIRM_FRAMES   (3)
 #define STEER_WIDE_OFF       (60)    /* 低于它 → 认为只是一条道     */
 
 extern volatile uint8 mk_state;   // 标线状态：0空闲 1减速 2停车
@@ -159,6 +163,8 @@ void Steer_Set_Mid(int16 m)
 }
 int16    Steer_Trim = 16;      // 转向微调：中位对正后用不到，只补很小的直道偏差
 uint16   steer_guard_bits = 0;
+uint8    steer_mode = 0;      /* 0 waiting, 1 settling, 2 lane, 3 cone, 4 invalid, 5 parked */
+int32    steer_raw_target = -1;
 int32    steer_target = -1;    // 本次计算出的目标点（诊断用）   // ★诊断：保护条件位掩码，0=PID正在跑
 uint8    showpoint[2] = {0};
 uint16   Speed_max = 150,Speed_min = 20;
@@ -200,6 +206,9 @@ uint8  Set_Speed;        //速度挡位  超过8为全程匀速
 // 舵机控制
 void S3010_Control(void)
 {
+    static uint16 start_ticks = 0;
+    static int32 lane_target = 60;
+    uint8 cone_steering = 0;
     Point_Error = ABS(Point-Point_Mid);   //用于赛道判断
     /* [2026-10-20] START GATE: before the car is released the camera has no
        valid image, Point stays 0, the PID sees an error of 60 and slams the
@@ -212,6 +221,11 @@ void S3010_Control(void)
        Steering still works after the start (zebra stop keeps Flag_stop=1). */
     if(Stop_1 == 0)
     {
+        start_ticks = 0;
+        lane_target = Point_Mid;
+        steer_settle = 1;
+        steer_mode = 0;
+        Point_PID.LastError = 0;
         slalom_dir = -1;   /* [2026-10-26] 每次发车前把交错方向复位成"先往左" */
         cone_group_cnt = 0;   /* 每次发车前清零，允许重新绕两次 */
         end_stopped = 0;      /* 终点停车标志复位 */
@@ -234,12 +248,24 @@ void S3010_Control(void)
                 else                          steer_target = (int32)Left_Line[22] + w2 * 3 / 4;  /* 整条路：右道中心 */
             }
             else if(l_ok2)  steer_target = (int32)Left_Line[22]  +
-                                            ((lane_k > 50) ? (STEER_LANE_W_DEF * 3 / 2) : (STEER_LANE_W_DEF / 2));
+                                            (STEER_LANE_W_DEF / 2);
             else if(r_ok2)  steer_target = (int32)Right_Line[22] -
-                                            ((lane_k > 50) ? (STEER_LANE_W_DEF / 2) : (STEER_LANE_W_DEF * 3 / 2));
+                                            (STEER_LANE_W_DEF / 2);
             else            steer_target = Point_Mid;
         }
-        SD5_Duty = Steer_Mid + Steer_Trim;
+        steer_raw_target = steer_target;
+        SD5_Duty = range_protect(Steer_Mid + Steer_Trim, Pwm_Min, Pwm_Max);
+    }
+    else if(end_stopped || start_ticks < STEER_START_TICKS)
+    {
+        if(!end_stopped) start_ticks ++;
+        steer_settle = (uint8)(!end_stopped);
+        steer_mode = end_stopped ? 5 : 1;
+        steer_guard_bits = end_stopped ? 0 : 0x0001;
+        steer_raw_target = steer_target = Point_Mid;
+        lane_target = Point_Mid;
+        Point_PID.LastError = 0;
+        SD5_Duty = range_protect(Steer_Mid + Steer_Trim, Pwm_Min, Pwm_Max);
     }
 #if STEER_LANE_FOLLOW
     /* [2026-10-20] lane following wins over the competition state machine */
@@ -256,6 +282,7 @@ void S3010_Control(void)
            2) 中点贴到图像两侧（起跑过曝时会算出 P=2）
            3) 第 50 行赛道宽度不是真实车道宽度（过暗时 L=1 R=100 W=99，
               是扫描碰边界的假值，P 会被拉到 39 这种固定偏左值） */
+        steer_settle = 0;
         steer_guard_bits = 0;
         if(steer_settle)                                  steer_guard_bits |= 0x0001;  // 刚上电在等图
         if(0 == Point)                                    steer_guard_bits |= 0x0002;  // 中线为 0
@@ -277,7 +304,8 @@ void S3010_Control(void)
            w >  70：扫到了整条路    → lane_k<=50 取左道中心，>50 取右道中心
            只有单边线时，用学到的单道宽往缺失那侧推半个道宽。 */
         {
-            uint8 l_ok = (Left_Line[22] > 6)  && (Left_Line[14] > 6);
+            uint8 l_ok = (Left_Line[22] > 6) && (Left_Line[14] > 6) &&
+                         (Left_Line[22] < (MT9V03X_W - 3)) && (Left_Line[14] < (MT9V03X_W - 3));
             uint8 r_ok = (Right_Line[22] > 6) && (Right_Line[14] > 6) &&
                          (Right_Line[22] < (MT9V03X_W - 3)) && (Right_Line[14] < (MT9V03X_W - 3));
             int32 w    = (int32)Right_Line[22] - (int32)Left_Line[22];
@@ -316,14 +344,12 @@ void S3010_Control(void)
                 /* ★2026-10-24 位置合理性：横道/斑马线时边界会贴到画面边缘，
                    例如 L=100 还在"左边界"，补出半个道宽就跑到画面外了（实测 TP=127）。
                    左边线必须在画面左 3/4 内、右边线必须在右 3/4 内才算数。 */
-                /* ★2026-10-24 单边时按 lane_k 选道
-                   只看到左边线时，默认取"它右边第一条道"的中心 = 左道。
-                   实测 T=43 那帧 L=12、R 丢了 → TP=33、duty=987（左限位），车直接跑左道。
-                   选了右道(lane_k>50)就要再加一个道宽 → 右道中心。 */
+                /* One visible edge does not identify the outer edge of both lanes.
+                   Reconstruct only half of one lane; never request an extra lane change. */
                 if(l_ok && Left_Line[22] < (MT9V03X_W * 3 / 4))
-                    pt = (int32)Left_Line[22]  + ((lane_k > 50) ? (lw * 3 / 2) : (lw / 2));
+                    pt = (int32)Left_Line[22]  + (lw / 2);
                 else if(r_ok && Right_Line[22] > (MT9V03X_W / 4))
-                    pt = (int32)Right_Line[22] - ((lane_k > 50) ? (lw / 2) : (lw * 3 / 2));
+                    pt = (int32)Right_Line[22] - (lw / 2);
 
                 /* [2026-10-24] 限幅：实测出现过 TP=134（画面只有 0~119）。
                    lw*3/2 在 L 靠右的时候会推到画面外，舵机从满左直接甩到满右。 */
@@ -359,6 +385,8 @@ void S3010_Control(void)
                 static uint16 hold    = 0;  /* 兜底计时（5ms 一次） */
                 static uint8 done    = 0;   /* 这一组锥桶已经处理过 */
                 static uint16 clear_cnt = 0;/* 连续没看到锥桶的帧数 */
+                static uint8 confirm = 0;
+                static uint32 confirm_frame = 0;
                 static int8  dir     = 0;   /* +1 = 往右变道   -1 = 往左变道 */
 
                 /* [2026-10-24] 一组锥桶只变一次道。
@@ -371,7 +399,18 @@ void S3010_Control(void)
 
                 if(done && clear_cnt >= CONE_CLEAR_TICKS) done = 0;
 
-                if(!latched && !done && cone_ok && cone_cnt >= 2 &&
+                /* Count completed vision results, not repeated 5 ms reads of one result. */
+                if(confirm_frame != vision_processed_frames)
+                {
+                    confirm_frame = vision_processed_frames;
+                    if(cone_ok && cone_cnt >= 2 && cone_near >= CONE_TRIG_ROW &&
+                       cone_x >= 6 && cone_x <= (MT9V03X_W - 6))
+                    {
+                        if(confirm < CONE_CONFIRM_FRAMES) confirm ++;
+                    }
+                    else confirm = 0;
+                }
+                if(!latched && !done && confirm >= CONE_CONFIRM_FRAMES && cone_ok && cone_cnt >= 2 &&
                    cone_x >= 6 && cone_x <= (MT9V03X_W - 6) &&      /* 贴边的 blob 是噪点 */
                    cone_near >= CONE_TRIG_ROW &&
                    cone_group_cnt < CONE_MAX_GROUPS)                /* 最多绕两组 */
@@ -386,6 +425,7 @@ void S3010_Control(void)
                     done = 1;                    /* 这一组已经处理，别再触发 */
                     if(dir != 0)
                     {
+                        confirm = 0;
                         latched  = 1;
                         od_start = Run_Odo;   /* 记下起点里程 */
                         hold     = CONE_HOLD_MAXTICKS;
@@ -428,55 +468,40 @@ void S3010_Control(void)
                         if(dir > 0 && t < (int32)Point_Mid + 6) t = (int32)Point_Mid + 6;
 
                         pt = t;
+                        cone_steering = 1;
                     }
                 }
             }
             #endif
 
-            /* ★不可信帧保持上一次的目标点（2026-10-24）
-               横道/斑马线/过曝时：中线拟合塌到 2~6（Point<=6）、可信行骤减（FR<40）、
-               边界跳到画面边缘，这时算出来的 pt 全是垃圾。
-               原来 steer_guard_bits 算出来没人用，舵机照样拿垃圾数据打方向
-               ——横道前实测 TP 57→86、duty 934→863，就是"右偏"的来源。
-               现在只要这几位命中就沿用上一次的可信目标点；
-               连续 2 秒都不可信才回中位，避免真的丢线时一直保持错误方向。 */
+            /* Invalid images must not preserve a previous cornering command for 2 seconds.
+               Confirmed cone maneuvers are handled separately from normal straight following. */
+            steer_raw_target = pt;
+            if(!cone_steering)
             {
-                static int32 pt_good = 60;   /* 最近一个可信目标点 */
-                static uint16 bad_cnt = 0;   /* 连续不可信次数（5ms 一次） */
-                uint8 bad = 0;
-
-                if(pt < 0) bad = 1;
-                /* [2026-10-26] 曾经把 0x0100/0x0200（22 行边界贴画面边缘）也加进来，
-                   已撤回：这条路的路面比摄像头视野宽，L=1 / R=117 是正常现象，
-                   不是扫描失败。加进来以后几乎每帧都被判成不可信，pt 一直沿用旧值，
-                   车反而乱跑。 */
-                /* [2026-10-26] 加上 0x0010 / 0x0020：第 22 行车道宽 <20 或 >140。
-                   实测日志里出现过 W=0 / 7 / 27 / 35（一条道正常是 40~110），
-                   全是扫描塌掉的垃圾值，但代码照样拿它算 pt -> 舵机乱打。
-                   注意和 0x0100/0x0200（边线贴画面边缘）不同：那条是正常的，
-                   这条路的路面本来比摄像头视野宽。 */
-                if(steer_guard_bits & (0x0004 | 0x0008 | 0x1000 | 0x0010 | 0x0020)) bad = 1;
-
+                uint8 bad = (uint8)(pt < 0 ||
+                    (steer_guard_bits & (0x0004 | 0x0008 | 0x1000 | 0x0010 | 0x0020)));
                 if(bad)
                 {
-                    if(++ bad_cnt >= 400)    /* 5ms × 400 = 2 秒 */
-                    {
-                        pt_good = Point_Mid;
-                        pt      = Point_Mid;
-                        bad_cnt = 0;
-                    }
-                    else
-                    {
-                        pt = pt_good;
-                    }
+                    lane_target = Point_Mid;
+                    Point_PID.LastError = 0;
+                    steer_mode = 4;
                 }
                 else
                 {
-                    pt_good = pt;
-                    bad_cnt = 0;
+                    pt = range_protect(pt, (int32)Point_Mid - STEER_STRAIGHT_RANGE,
+                                           (int32)Point_Mid + STEER_STRAIGHT_RANGE);
+                    if(lane_target < pt) lane_target += STEER_TARGET_STEP;
+                    else if(lane_target > pt) lane_target -= STEER_TARGET_STEP;
+                    steer_mode = 2;
                 }
+                pt = lane_target;
             }
-
+            else
+            {
+                lane_target = Point_Mid;
+                steer_mode = 3;
+            }
 
             steer_target = pt;
             if(pt >= 0)
@@ -568,6 +593,18 @@ void Motor_Control(void)
 //    printf("%d,%d",Rrealspeed,RMotorSpeed);   // ★原在 5ms 中断里，每秒 200 次，占用串口和中断时间
 
 
+    /* A latched final stop overrides PID history and every motor test mode. */
+    if(Stop_1 && end_stopped)
+    {
+        RMPID.Sum = RMPID.e0 = RMPID.e1 = RMPID.e2 = 0;
+        LMPID.Sum = LMPID.e0 = LMPID.e1 = LMPID.e2 = 0;
+        RSpeedPWM = LSpeedPWM = 0;
+        gpio_set_level(MOTOR1_A, 0);
+        gpio_set_level(MOTOR2_A, 0);
+        pwm_set_duty(MOTOR1_B, 0);
+        pwm_set_duty(MOTOR2_B, 0);
+        return;
+    }
     RSpeedPWM = RMotorPid_Col(RMotorSpeed);
     LSpeedPWM = LMotorPid_Col(LMotorSpeed);
 
@@ -658,7 +695,6 @@ void Motor_Control(void)
 void Point_Control(void)
 {
     float res;
-    int32 Sum = 0;
     uint8 point_raw;   // [2026-10-20] point_med removed
     /* [2026-10-20] remember the raw Point before the median for the loss guard */
 //    if(Deal_Flag > 20 && !Dis_Flag)
@@ -668,6 +704,13 @@ void Point_Control(void)
 //    else
         Line_Point = 20;   /* [2026-10-20] back to 20 (12 behaved worse) */
 
+    if(Line_Count < 0 || Line_Count > 54)
+    {
+        Mid_Ka = 0;
+        Mid_Kb = Point_Mid;
+        Point = 0;     /* Publish invalid instead of converting NaN to an image coordinate. */
+        return;
+    }
     Least_Sqaure_Method(&Mid_Ka,&Mid_Kb,58, Line_Count+2); // 拟合中线斜率
     //Least_Sqaure_Method(&Mid_Ka,&Mid_Kb,58, Line_Count+2); // 拟合中线斜率
     Fictitious_Beeline_Num = Fictitious_Beeline(Mid_Ka,Mid_Kb);  // 拟合中线  返回相似度
@@ -807,6 +850,11 @@ void Control_Speed(void)
         }
         else if(mk_state == 2)                                 // 停车计时
         {
+#if MK_FINAL_STOP && MK_ACT_ENABLE
+            (void)mk_stop_cnt;
+            /* User-requested debug behavior: one crosswalk, no timed restart. */
+            end_stopped = 1;
+#else
             if(++ mk_stop_cnt >= MK_STOP_TICKS)
             {
                 mk_state = 3;
@@ -814,6 +862,7 @@ void Control_Speed(void)
                 Distance = 0;
                 Distance_ON = 0;
             }
+#endif
         }
         else if(mk_state == 3)                                 // 过完横道回空闲
         {
@@ -829,6 +878,9 @@ void Control_Speed(void)
         else if(mk_state == 2)
         {
             LMotorSpeed = RMotorSpeed = MK_PARK_DUTY;
+#if MK_FINAL_STOP
+            end_stopped = 1;
+#endif
         }
 #else
         (void)mk_stop_cnt;   /* 只记录模式：计时期照走，用于日志 */
@@ -856,6 +908,12 @@ void Least_Sqaure_Method(float *Ka, float *Kb,uint8 start, uint8 end)
     uint8 i;
     double Sum1=0,Sum2=0;
     double Mean_i=0,Mean_y=0;
+    if(start >= 61 || end >= start || (start - end) < 2)
+    {
+        *Ka = 0;
+        *Kb = Point_Mid;
+        return;
+    }
     //计算平均值
     for(i=start;i>end;i--)
     {
@@ -870,6 +928,12 @@ void Least_Sqaure_Method(float *Ka, float *Kb,uint8 start, uint8 end)
     {
         Sum1+=1.0*(i-Mean_i)*(Mid_Line[i]-Mean_y);
         Sum2+=1.0*(i-Mean_i)*(i-Mean_i);
+    }
+    if(Sum2 <= 0)
+    {
+        *Ka = 0;
+        *Kb = Point_Mid;
+        return;
     }
     *Ka=Sum1/Sum2;
     //计算Kb

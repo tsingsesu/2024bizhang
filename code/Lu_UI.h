@@ -34,6 +34,8 @@ void LuUI_Log_Poll(void);
 #define MK_ACT_ENABLE             (1)    /* [2026-10-26] 锥桶被误判成横道导致停车，已改 Marker_Scan 判据（白带须横跨 >=60% 车道宽且盖住车道中心）。若跑起来又在障碍处停车，先把这里改回 0。 */
 /* [2026-10-24] 锥形标绕行：1=检测到锥桶就转向避让  0=只识别不动舵机 */
 #define CONE_ACT_ENABLE           (1)
+/* Debug override: 1 = crosswalk stop stays parked; 0 = resume after 5 seconds. */
+#define MK_FINAL_STOP             (1)
 extern int8 RMotorSpeed1;
 extern int16 canshu_test[8];
 extern int8 FLAG1111;

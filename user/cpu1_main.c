@@ -95,6 +95,7 @@ void core1_main(void)
             Stop_Probe(*imagebinary);       /* [2026-10-26] 终点探测：只统计，不动作 */
             Glare_Suppress(*imagebinary);   // [2026-10-20] reject reflection blobs
             Point_Control();      // 中点计算
+            vision_processed_frames ++;  /* Publish a completed perception result. */
             // ★原来清这个标志的是 LuUI_Show_page1() 里的那句 mt9v03x_finish_flag=0
             //   现在屏幕关了，必须在这里清 —— 否则标志一直是 1，同一帧会被反复处理
 #if (AGL_LOG_EVERY_N > 0)
