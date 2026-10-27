@@ -840,6 +840,10 @@ void Control_Speed(void)
         if(end_stop_cm > 0 && !end_stopped && Run_Odo >= (double)end_stop_cm)
         {
             end_stopped = 1;
+        }
+        /* Keep the stop latched until the pre-start reset clears it. */
+        if(end_stopped)
+        {
             LMotorSpeed = 0;
             RMotorSpeed = 0;
         }
