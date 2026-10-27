@@ -21,7 +21,7 @@ def read_source(name):
 
 
 def function(source, name):
-    match = re.search(r"^(?:void|int32|int16)\s+" + name + r"\([^\n]*\)\s*\n\{", source, re.M)
+    match = re.search(r"^(?:static\s+)?(?:void|int32|int16|uint16|uint32|uint8)\s+" + name + r"\([^\n]*\)\s*\n\{", source, re.M)
     assert match, name
     # These source functions have their closing brace at column zero.
     end = source.index("\n}", match.end()) + 2
@@ -32,6 +32,7 @@ CONTROL = read_source("code/control.c")
 PID_SOURCE = read_source("code/PID.c")
 UI_HEADER = read_source("code/Lu_UI.h")
 IMAGE_SOURCE = read_source("code/Img_analyse.c")
+SYSTEM_HEADER = read_source("user/System.h")
 
 PRELUDE = r"""
 #include <stdint.h>
@@ -57,7 +58,10 @@ uint8 cone_group_cnt; char Point_Error;
 int32 SD5_Duty,steer_target,steer_raw_target,LMotorSpeed,RMotorSpeed,LSpeedPWM,RSpeedPWM,iError;
 int16 Rcount,Lcount,Rrealspeed,Lrealspeed,Fictitious_Beeline_Num;
 double Distance,Distance_Test,Run_Odo; float Mid_Ka,Mid_Kb;
-volatile uint32 isr_tick_5ms,vision_processed_frames;
+volatile uint32 isr_tick_5ms,vision_processed_frames,tof_sample_tick;
+uint16 vision_age_ticks,track_bad_ticks,mk_stop_elapsed_ms,mk_clear_remaining_mm;
+uint8 drive_inhibit,mk_finish_reason,mk_near_white,tof_has_sample;
+uint16 tof_sample_mm;double run_distance_cm;
 #define MT9V03X_W 120
 #define COL 120
 #define ABS(x) ((x)<0?-(x):(x))
@@ -94,11 +98,13 @@ CONSTANTS = [
     "CONE_ROW_MIN", "CONE_ROW_MAX", "CONE_COL_MIN", "CONE_COL_MAX",
     "CONE_W_MIN", "CONE_W_MAX", "CONE_LINK_X", "CONE_NEAR_ROW",
     "CONE_MIN_ROWS", "CONE_MAX_BLOBS", "CONE_MAX_PTS",
+    "VISION_STALE_TICKS", "TRACK_LOSS_TICKS", "TOF_FRESH_TICKS", "MK_CROSS_SPEED",
+    "MK_CLEAR_CM", "MK_CROSS_LIMIT_CM", "MK_STILL_COUNTS", "All_Line", "Ratio", "Length", "Multiple",
 ]
 
 
 def macro(name):
-    match = re.search(r"^#define\s+" + name + r"\s+(\([^\n]*?\)|\d+)", CONTROL + "\n" + UI_HEADER + "\n" + IMAGE_SOURCE, re.M)
+    match = re.search(r"^#define\s+" + name + r"\s+(\([^\n]*?\)|-?\d+(?:\.\d+)?)", CONTROL + "\n" + UI_HEADER + "\n" + IMAGE_SOURCE + "\n" + SYSTEM_HEADER, re.M)
     assert match, name
     return "#ifndef " + name + "\n#define " + name + " " + match.group(1) + "\n#endif\n"
 
@@ -106,7 +112,7 @@ def macro(name):
 TESTS = r"""
 static void check(int ok,const char *why){if(!ok){fprintf(stderr,"FAIL: %s (mode=%d raw=%d target=%d duty=%d MK=%d ES=%d)\n",why,steer_mode,steer_raw_target,steer_target,SD5_Duty,mk_state,end_stopped);exit(1);}}
 static void lane(int l,int r){for(int i=0;i<61;i++){Left_Line[i]=l;Right_Line[i]=r;Width_Real[i]=r-l;Mid_Line[i]=(l+r)/2;} Point=60;Result_Far_Row=59;}
-static void start(void){Stop_1=0;S3010_Control();Stop_1=1;for(int i=0;i<STEER_START_TICKS;i++){S3010_Control();check(steer_mode==1 && servo_pwm==933 && steer_target==60,"startup is centered for every tick");}}
+static void start(void){vision_processed_frames=1;Stop_1=0;S3010_Control();Stop_1=1;for(int i=0;i<STEER_START_TICKS;i++){vision_processed_frames++;S3010_Control();check(steer_mode==1 && servo_pwm==933 && steer_target==60,"startup is centered for every tick");}}
 static void band(int x,int y){for(int i=0;i<8;i++)image[y*COL+x+i]=255;}
 int main(int argc,char **argv){check(argc==2,"scenario required");
  if(!strcmp(argv[1],"straight")){
@@ -115,7 +121,7 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   for(int i=0;i<40;i++){S3010_Control();check(steer_target>=50 && steer_target<=70 && servo_pwm>847 && servo_pwm<987,"straight correction stays bounded");}
   lane(1,97);Point=48;for(int i=0;i<40;i++)S3010_Control();
   lane(1,117);S3010_Control();check(steer_mode==4 && servo_pwm==933,"both missing edges return to neutral, not old turn");
-  lane(38,82);Point=2;S3010_Control();check(steer_mode==4 && servo_pwm==933,"invalid fitted point returns to neutral");
+  lane(38,82);Point=2;Line_Count=59;S3010_Control();check(steer_mode==4 && servo_pwm==933,"invalid fitted point returns to neutral");
  }
  else if(!strcmp(argv[1],"cone")){
   lane(20,100);cone_ok=1;cone_cnt=2;cone_near=50;cone_x=80;start();
@@ -132,22 +138,63 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
 #endif
  }
  else if(!strcmp(argv[1],"crosswalk")){
-  lane(38,82);start();for(int i=0;i<1200;i++)Control_Speed();check(LMotorSpeed>0,"normal drive remains available");
-  mk_cw_seen=1;mk_cw_near=50;for(int i=0;i<MK_CW_CONFIRM+1;i++)Control_Speed();
-  check(mk_state==2,"confirmed crosswalk triggers stop state");
-#if MK_ACT_ENABLE && MK_FINAL_STOP
-  check(end_stopped && LMotorSpeed==0 && RMotorSpeed==0,"crosswalk immediately latches stop");
-  mk_cw_seen=0;mk_cw_near=0;
-  for(int i=0;i<6000;i++){Control_Speed();check(end_stopped && LMotorSpeed==0 && RMotorSpeed==0,"no timed restart for 30 seconds");}
-  RMPID.Sum=2000;LMPID.Sum=1800;RMPID.e0=LMPID.e0=50;motor_pwm[1]=motor_pwm[2]=2000;
-  mock_encoder[1]=20;mock_encoder[2]=-20;Motor_Control();
-  check(motor_pwm[1]==0 && motor_pwm[2]==0 && RMPID.Sum==0 && LMPID.Sum==0,"final stop clears PID history and actual PWM outputs");
-  S3010_Control();check(steer_mode==5 && servo_pwm==933,"parked car also centers the servo");
+  lane(38,82);start();for(int i=0;i<1200;i++){Control_Speed();}check(LMotorSpeed>0,"normal drive remains available");
+  mk_cw_seen=1;mk_cw_near=50;for(int i=0;i<MK_CW_CONFIRM;i++)Control_Speed();
+  check(mk_state==2 && !end_stopped,"crosswalk first enters temporary stop");
+#if MK_ACT_ENABLE
+  check(drive_inhibit && LMotorSpeed==0,"temporary stop immediately inhibits output");
+  Lrealspeed=Rrealspeed=5;for(int i=0;i<200;i++)Control_Speed();
+  check(mk_state==2 && mk_stop_elapsed_ms==0,"moving vehicle cannot consume the five stationary seconds");
+  Lrealspeed=Rrealspeed=0;for(int i=0;i<MK_STOP_TICKS-1;i++)Control_Speed();
+  check(mk_state==2 && mk_stop_elapsed_ms==4995,"cannot leave before a full five stationary seconds");
+  Control_Speed();check(mk_state==3 && !end_stopped && mk_stop_elapsed_ms==5000,"five seconds release low speed crossing");
+  run_distance_cm=10;mk_near_white=1;vision_processed_frames++;Control_Speed();
+  run_distance_cm=59.9;mk_near_white=0;vision_processed_frames++;Control_Speed();
+  check(mk_state==3 && !end_stopped,"49.9 cm after last stripe is not full clearance");
+  run_distance_cm=60;Control_Speed();check(mk_state==4 && mk_finish_reason==1,"last stripe plus 50 cm completes crossing");
+#if MK_FINAL_STOP
+  check(end_stopped && LMotorSpeed==0 && RMotorSpeed==0,"completed crossing latches final stop");
+  for(int i=0;i<6000;i++){Control_Speed();check(end_stopped && LMotorSpeed==0,"final parking cannot restart");}
+  RMPID.Sum=LMPID.Sum=2000;Motor_Control();check(motor_pwm[1]==0 && motor_pwm[2]==0 && RMPID.Sum==0 && LMPID.Sum==0,"parked PWM and PID history are zero");
+  S3010_Control();check(steer_mode==5 && servo_pwm==933,"final parking centers servo");
 #else
-  check(!end_stopped,"timed/log-only option does not latch final stop");
-  for(int i=0;i<MK_STOP_TICKS;i++)Control_Speed();
-  check(mk_state!=2 && LMotorSpeed>0,"5 second restart is retained when override disabled");
+  for(int i=0;i<1200;i++){Control_Speed();}check(!end_stopped && LMotorSpeed>0,"optional continue mode keeps driving after crossing");
 #endif
+#else
+  for(int i=0;i<1200;i++){Control_Speed();}check(!end_stopped && LMotorSpeed>0,"log-only mode does not park");
+#endif
+ }
+ else if(!strcmp(argv[1],"corridor")){
+  lane(20,96);Point=56;start();S3010_Control();check(steer_raw_target==58 && steer_target<=60,"76 pixel current lane is centered, not shifted to 77");
+ }
+ else if(!strcmp(argv[1],"vision")){
+  lane(38,82);start();vision_processed_frames=0;
+  for(int i=0;i<1200;i++){Control_Speed();}check(drive_inhibit && LMotorSpeed==0,"no processed image cannot accelerate");
+  motor_pwm[1]=motor_pwm[2]=2000;Motor_Control();check(motor_pwm[1]==0 && motor_pwm[2]==0,"missing camera inhibits actual motor output");
+  vision_processed_frames=1000;vision_age_ticks=0;track_bad_ticks=0;Control_Speed();check(LMotorSpeed==0,"camera recovery restarts ramp from zero");
+  for(int i=0;i<1200;i++){Control_Speed();}check(LMotorSpeed>0,"valid camera can recover");
+  vision_age_ticks=VISION_STALE_TICKS;Control_Speed();check(drive_inhibit && LMotorSpeed==0,"stalled processing stops vehicle");
+  vision_age_ticks=0;Line_Count=59;for(int i=0;i<TRACK_LOSS_TICKS;i++){vision_processed_frames++;S3010_Control();}
+  Control_Speed();check(drive_inhibit && LMotorSpeed==0,"persistent invalid lane stops vehicle");
+ }
+ else if(!strcmp(argv[1],"tof_odo")){
+  lane(38,82);start();mock_encoder[1]=100;mock_encoder[2]=-100;Motor_Control();
+  check(fabs(run_distance_cm-100.0*Length*Multiple/(All_Line*Ratio))<1e-6,"physical odometry uses wheel geometry, not legacy O units");
+  check(Tof_Get_Distance()==8192,"no ToF sample is unknown");
+  tof_has_sample=1;tof_sample_mm=250;tof_sample_tick=100;isr_tick_5ms=104;
+  check(Tof_Get_Distance()==250 && Tof_Get_Age_Ms()==20,"new ToF value is held between polling rounds");
+  isr_tick_5ms=141;check(Tof_Get_Distance()==8192,"stale ToF is marked unknown");
+  tof_sample_tick=0xFFFFFFF0U;isr_tick_5ms=5;check(Tof_Get_Distance()==250,"ToF freshness handles timer wrap");
+ }
+ else if(!strcmp(argv[1],"cross_limit")){
+  lane(38,82);start();mk_state=3;run_distance_cm=MK_CROSS_LIMIT_CM;Control_Speed();
+  check(mk_state==4 && mk_finish_reason==2,"unverifiable crossing has a bounded distance safeguard");
+ }
+ else if(!strcmp(argv[1],"near_band")){
+  memset(image,0,sizeof(image));check(!Mai_Near_White_Scan(image),"black road is not a stripe");
+  for(int y=45;y<=58;y++){band(48,y);}check(!Mai_Near_White_Scan(image),"vertical marking is not a transverse stripe");
+  memset(image,0,sizeof(image));for(int x=38;x<78;x++)image[50*COL+x]=255;
+  check(Mai_Near_White_Scan(image),"near transverse band updates clearance anchor");
  }
  else if(!strcmp(argv[1],"perception")){
   lane(1,117);start();band(70,54);band(74,56);
@@ -187,9 +234,9 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
 
 def main():
     definitions = "".join(macro(name) for name in CONSTANTS)
-    functions = '#include "Mai_cone_geometry.h"\n' + function(IMAGE_SOURCE, "Cone_Scan")
+    functions = '#include "Mai_cone_geometry.h"\n' + function(IMAGE_SOURCE, "Mai_Near_White_Scan") + function(IMAGE_SOURCE, "Cone_Scan")
     functions += "".join(function(PID_SOURCE, n) for n in ["PlacePID_Control", "RMotorPid_Col", "LMotorPid_Col"])
-    functions += "".join(function(CONTROL, n) for n in ["S3010_Control", "Motor_Control", "Point_Control", "Control_Speed", "Least_Sqaure_Method", "Fictitious_Beeline"])
+    functions += "".join(function(CONTROL, n) for n in ["S3010_Control", "Motor_Control", "Point_Control", "Control_Speed", "Least_Sqaure_Method", "Fictitious_Beeline", "Tof_Get_Distance", "Tof_Get_Age_Ms"])
     with tempfile.TemporaryDirectory(prefix="Mai_control_regression_") as directory:
         work = Path(directory)
         source = work / "Mai_control.c"
@@ -213,7 +260,7 @@ def main():
             subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror=format", "-Werror=implicit-function-declaration", "-I", str(ROOT / "code"), f"-DMK_FINAL_STOP={final}", f"-DMK_ACT_ENABLE={actions}", f"-DCONE_ACT_ENABLE={cone}", str(source), "-lm", "-o", str(executable)], check=True)
             cases = ["crosswalk"]
             if final and actions:
-                cases += ["straight", "cone", "fit", "distance"]
+                cases += ["straight", "cone", "fit", "distance", "corridor", "vision", "tof_odo", "cross_limit", "near_band"]
                 if cone:
                     cases.append("perception")
                 if replay:

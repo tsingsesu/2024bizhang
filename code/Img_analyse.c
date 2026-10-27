@@ -27,6 +27,8 @@ volatile uint8  start_ready = 0;
    CPU0 中断负责消费，保证每个测量样本只统计一次（不然 8192 会把样本冲掉） */
 volatile uint16 tof_sample_mm  = 0;
 volatile uint8  tof_new_sample = 0;
+volatile uint32 tof_sample_tick = 0;
+volatile uint8 tof_has_sample = 0;
 
 /*************************图像赛道数据****************************/
 uint16 Left_Line[61], Right_Line[61], Mid_Line[61]; // 原始左右边界数据
@@ -115,7 +117,26 @@ uint8 agl_blob_pair     = 0;   // diag: rows that contained two glare-sized whit
 
 volatile uint8 mk_cw_seen = 0,  mk_cw_near  = 0, mk_cw_score  = 0;   // 人行横道
 volatile uint8 mk_dia_seen = 0, mk_dia_near = 0, mk_dia_score = 0;   // 减速菱形
-volatile uint8 mk_state = 0;                                        // 0空闲 1慢行 2停车计时 3已通过
+volatile uint8 mk_state = 0; /* 0 lane, 1 slow, 2 wait, 3 cross, 4 passed */
+volatile uint8 mk_near_white = 0;
+
+static uint8 Mai_Near_White_Scan(uint8 *data)
+{
+    uint8 row, col, run;
+    for(row = 45; row <= 58; row ++)
+    {
+        run = 0;
+        for(col = 36; col <= 84; col ++)
+        {
+            if(data[row * COL + col])
+            {
+                if(++ run >= 22) return 1;
+            }
+            else run = 0;
+        }
+    }
+    return 0;
+}
 
 void Marker_Scan(uint8 *data)
 {
@@ -123,6 +144,7 @@ void Marker_Scan(uint8 *data)
     uint8 cw_rows = 0, dia_rows = 0;
     uint8 cw_near = 0, dia_near = 0;
     uint8 wc, run_max, pairs;
+    mk_near_white = Mai_Near_White_Scan(data);
 
     /* [2026-10-22] 整幅过曝(>190)或过暗(<10)时二值图没有意义，
        起跑瞬间 iavg=205 会让人行横道误报。 */

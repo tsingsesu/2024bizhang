@@ -25,6 +25,9 @@
 #define STEER_TARGET_STEP     (1)     /* Max target movement per 5 ms control tick. */
 #define STEER_START_TICKS     (200)   /* 1 second, timed by the steering ISR. */
 #define CONE_CONFIRM_FRAMES   (3)
+#define VISION_STALE_TICKS    (40)    /* 200 ms without a processed frame. */
+#define TRACK_LOSS_TICKS      (40)    /* 200 ms without a usable lane. */
+#define TOF_FRESH_TICKS       (40)
 #define STEER_WIDE_OFF       (60)    /* 低于它 → 认为只是一条道     */
 
 extern volatile uint8 mk_state;   // 标线状态：0空闲 1减速 2停车
@@ -163,6 +166,15 @@ void Steer_Set_Mid(int16 m)
 }
 int16    Steer_Trim = 16;      // 转向微调：中位对正后用不到，只补很小的直道偏差
 uint16   steer_guard_bits = 0;
+uint16 vision_age_ticks = 0, track_bad_ticks = 0;
+uint8 drive_inhibit = 0;
+double run_distance_cm = 0;  /* Nominal physical distance; legacy Run_Odo is preserved. */
+uint16 mk_stop_elapsed_ms = 0, mk_clear_remaining_mm = 500;
+uint8 mk_finish_reason = 0;
+extern volatile uint8 mk_near_white;
+extern volatile uint16 tof_sample_mm;
+extern volatile uint32 tof_sample_tick;
+extern volatile uint8 tof_has_sample;
 uint8    steer_mode = 0;      /* 0 waiting, 1 settling, 2 lane, 3 cone, 4 invalid, 5 parked */
 int32    steer_raw_target = -1;
 int32    steer_target = -1;    // 本次计算出的目标点（诊断用）   // ★诊断：保护条件位掩码，0=PID正在跑
@@ -208,7 +220,14 @@ void S3010_Control(void)
 {
     static uint16 start_ticks = 0;
     static int32 lane_target = 60;
+    static uint32 last_vision_frame = 0;
     uint8 cone_steering = 0;
+    if(vision_processed_frames != last_vision_frame)
+    {
+        last_vision_frame = vision_processed_frames;
+        vision_age_ticks = 0;
+    }
+    else if(vision_age_ticks < 60000) vision_age_ticks ++;
     Point_Error = ABS(Point-Point_Mid);   //用于赛道判断
     /* [2026-10-20] START GATE: before the car is released the camera has no
        valid image, Point stays 0, the PID sees an error of 60 and slams the
@@ -222,6 +241,8 @@ void S3010_Control(void)
     if(Stop_1 == 0)
     {
         start_ticks = 0;
+        track_bad_ticks = 0;
+        run_distance_cm = 0;
         lane_target = Point_Mid;
         steer_settle = 1;
         steer_mode = 0;
@@ -243,9 +264,7 @@ void S3010_Control(void)
 
             if(l_ok2 && r_ok2 && w2 > 20)
             {
-                if(w2 <= STEER_ONE_LANE_MAX)  steer_target = (int32)Left_Line[22] + w2 / 2;      /* 单道：本道中心 */
-                else if(lane_k <= 50)         steer_target = (int32)Left_Line[22] + w2 / 4;      /* 整条路：左道中心 */
-                else                          steer_target = (int32)Left_Line[22] + w2 * 3 / 4;  /* 整条路：右道中心 */
+                steer_target = (int32)Left_Line[22] + w2 / 2;
             }
             else if(l_ok2)  steer_target = (int32)Left_Line[22]  +
                                             (STEER_LANE_W_DEF / 2);
@@ -256,11 +275,12 @@ void S3010_Control(void)
         steer_raw_target = steer_target;
         SD5_Duty = range_protect(Steer_Mid + Steer_Trim, Pwm_Min, Pwm_Max);
     }
-    else if(end_stopped || start_ticks < STEER_START_TICKS)
+    else if(end_stopped || (MK_ACT_ENABLE && mk_state == 2) || start_ticks < STEER_START_TICKS)
     {
-        if(!end_stopped) start_ticks ++;
-        steer_settle = (uint8)(!end_stopped);
-        steer_mode = end_stopped ? 5 : 1;
+        if(!end_stopped && !(MK_ACT_ENABLE && mk_state == 2)) start_ticks ++;
+        track_bad_ticks = 0;
+        steer_mode = end_stopped ? 5 : ((MK_ACT_ENABLE && mk_state == 2) ? 6 : 1);
+        steer_settle = (uint8)(steer_mode == 1);
         steer_guard_bits = end_stopped ? 0 : 0x0001;
         steer_raw_target = steer_target = Point_Mid;
         lane_target = Point_Mid;
@@ -296,7 +316,9 @@ void S3010_Control(void)
         if(Right_Line[22] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0200;  // 22行右边撞墙
         if(Left_Line[14] <= 2)                            steer_guard_bits |= 0x0400;  // 14行左边撞墙
         if(Right_Line[14] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0800;  // 14行右边撞墙
-        if(Result_Far_Row < STEER_MIN_VALID_ROWS)         steer_guard_bits |= 0x1000;  // 可信行太少
+        if(Line_Count < 0 || Line_Count > 22)             steer_guard_bits |= 0x1000;
+        if(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS)
+            steer_guard_bits |= 0x2000;
         /* ★宽度归一化 + 单边补线（2026-10-24）
            [2026-10-24] l_ok/r_ok 必须同时查上下界：整帧没线时 L=0/R=0，
            原来 r_ok 只查上界，(0 < 117) 成立 → 走单边分支算出 TP=-21，舵机左打死。
@@ -304,38 +326,19 @@ void S3010_Control(void)
            w >  70：扫到了整条路    → lane_k<=50 取左道中心，>50 取右道中心
            只有单边线时，用学到的单道宽往缺失那侧推半个道宽。 */
         {
-            uint8 l_ok = (Left_Line[22] > 6) && (Left_Line[14] > 6) &&
-                         (Left_Line[22] < (MT9V03X_W - 3)) && (Left_Line[14] < (MT9V03X_W - 3));
-            uint8 r_ok = (Right_Line[22] > 6) && (Right_Line[14] > 6) &&
-                         (Right_Line[22] < (MT9V03X_W - 3)) && (Right_Line[14] < (MT9V03X_W - 3));
+            uint8 l_ok = (Left_Line[22] > 6) && (Left_Line[22] < (MT9V03X_W - 3));
+            uint8 r_ok = (Right_Line[22] > 6) && (Right_Line[22] < (MT9V03X_W - 3));
             int32 w    = (int32)Right_Line[22] - (int32)Left_Line[22];
             int32 pt   = -1;
             static int32 lane_w_ema = 0;      /* ★只学"一条道"的宽度，不会被整条路污染 */
 
-            if(l_ok && r_ok && w > 20 && w <= STEER_ONE_LANE_MAX)
-                lane_w_ema = (0 == lane_w_ema) ? w : ((lane_w_ema * 7 + w) / 8);
-
+            /* The nearest bounding pair is the current corridor. Width alone cannot
+               distinguish one lane from two lanes in a clipped perspective image. */
             if(l_ok && r_ok && w > 20)
             {
-                /* [2026-10-26] 一条道 / 整条路 改成每帧拿学到的单道宽 lane_w_ema 比。
-                   原来是 85/60 固定阈值的迟滞：w 实测每帧在 59 到 116 之间跳，
-                   迟滞会把 wide_mode 卡在上一帧的状态，于是「这帧其实只扫到一条道
-                   (w=66)」还在用整条路的公式 Left+3w/4，pt 偏右 16px。
-                   日志里 TP 在 46 到 88 之间跳，车就左右乱摆。
-                   lane_w_ema 只从 w<=70 的帧学习，就是真实的一条道宽。 */
-                {
-                    int32 lw_ema = (lane_w_ema > 20) ? lane_w_ema : STEER_LANE_W_DEF;
-
-                    if(w > (lw_ema * 8 / 5))                      /* 明显比一条道宽 -> 整条路 */
-                    {
-                        if(lane_k <= 50) pt = (int32)Left_Line[22] + w / 4;      /* 左道中心 */
-                        else             pt = (int32)Left_Line[22] + w * 3 / 4;  /* 右道中心 */
-                    }
-                    else                                          /* 只扫到一条道 */
-                    {
-                        pt = (int32)Left_Line[22] + w / 2;
-                    }
-                }
+                pt = (int32)Left_Line[22] + w / 2;
+                if(!(steer_guard_bits & (0x1000 | 0x2000)) && w >= 30 && w <= 110)
+                    lane_w_ema = (0 == lane_w_ema) ? w : ((lane_w_ema * 7 + w) / 8);
             }
             else
             {
@@ -366,6 +369,7 @@ void S3010_Control(void)
             }
 
 #if CONE_ACT_ENABLE
+            if(mk_state < 2)
             /* ★锥形标绕行 —— 锁存式（2026-10-24）
                规则：锥形标分两组，第一组“变道”、第二组“回线”。
                所以看到锥桶不能“避一下就回正”，要变过去并保持。
@@ -480,15 +484,17 @@ void S3010_Control(void)
             if(!cone_steering)
             {
                 uint8 bad = (uint8)(pt < 0 ||
-                    (steer_guard_bits & (0x0004 | 0x0008 | 0x1000 | 0x0010 | 0x0020)));
+                    (steer_guard_bits & (0x1000 | 0x2000 | 0x0010 | 0x0020)));
                 if(bad)
                 {
                     lane_target = Point_Mid;
                     Point_PID.LastError = 0;
+                    if(track_bad_ticks < 60000) track_bad_ticks ++;
                     steer_mode = 4;
                 }
                 else
                 {
+                    track_bad_ticks = 0;
                     pt = range_protect(pt, (int32)Point_Mid - STEER_STRAIGHT_RANGE,
                                            (int32)Point_Mid + STEER_STRAIGHT_RANGE);
                     if(lane_target < pt) lane_target += STEER_TARGET_STEP;
@@ -500,6 +506,7 @@ void S3010_Control(void)
             else
             {
                 lane_target = Point_Mid;
+                track_bad_ticks = 0;
                 steer_mode = 3;
             }
 
@@ -577,7 +584,11 @@ void Motor_Control(void)
     /* [2026-10-22] 前进才累计。发车后刚放开那几秒车可能还没起步（PID 爬坡），
        或者被人往后退，这些都不算前进里程。 */
     if(Stop_1 && ((int32)Rcount + (int32)Lcount) > 0)
-        Run_Odo += DISTANCE(((int32)Rcount + (int32)Lcount) / 2);   // 绝对里程(cm)
+    {
+        Run_Odo += DISTANCE(((int32)Rcount + (int32)Lcount) / 2);   // Legacy tuning units.
+        run_distance_cm += (((double)Rcount + (double)Lcount) / 2.0) *
+                           (Length * Multiple / (All_Line * Ratio));
+    }
    // else  Distance = 0;
 
     
@@ -594,7 +605,7 @@ void Motor_Control(void)
 
 
     /* A latched final stop overrides PID history and every motor test mode. */
-    if(Stop_1 && end_stopped)
+    if(!Stop_1 || end_stopped || drive_inhibit)
     {
         RMPID.Sum = RMPID.e0 = RMPID.e1 = RMPID.e2 = 0;
         LMPID.Sum = LMPID.e0 = LMPID.e1 = LMPID.e2 = 0;
@@ -690,6 +701,10 @@ void Motor_Control(void)
                                                    // 一次，原来的 15 实际只等于 4 个相机帧，太容易误锁
 #define MK_STOP_ROW                 (45)     // 横道要到这一行以后才停（行号越大越近车头）
 #define MK_STOP_TICKS       (1000)    // 停车 5 秒（5ms * 1000）
+#define MK_CROSS_SPEED      (10)      /* Encoder counts per 5 ms, before the normal ramp. */
+#define MK_CLEAR_CM         (50)      /* Camera-to-rear ~30 cm + requested margin ~20 cm. */
+#define MK_CROSS_LIMIT_CM   (150)     /* Bound travel if stripe tracking never clears. */
+#define MK_STILL_COUNTS     (2)
 #define MK_PARK_DUTY        (0)       // 停车时电机输出（0 = 自然滑停）
 
 void Point_Control(void)
@@ -726,180 +741,167 @@ void Point_Control(void)
 
 void Control_Speed(void)
 {
-    LMotorSpeed = RMotorSpeed= 210;//360
-    if(Flag_stop==1)//停车
-    {
-        LMotorSpeed = RMotorSpeed = 0;
-    }
-    else if(Flag_stop==2)//左转
-    {
-        LMotorSpeed = 135;
-        RMotorSpeed = 135;
-    }
-    else if(Flag_stop==3)//右转
-    {
-         RMotorSpeed =135;
-         LMotorSpeed =135;
-    }
-    else if(Flag_stop==4)//加速
-    {
-        LMotorSpeed = RMotorSpeed =135;
-    }
-    else if(Flag_stop==5)//低速
-    {
-        LMotorSpeed = RMotorSpeed =135;
-    }
-    else if(Flag_stop==6)//（中速）
-    {
-        LMotorSpeed = RMotorSpeed =175;
-    }
-    else if(Flag_stop==7)//（转弯前减速）
-        {
-            LMotorSpeed = RMotorSpeed =135;
-        }
-    else if(Flag_stop==8)//（转弯前减速）
-            {
-                LMotorSpeed = RMotorSpeed =85;
-            }
+    static uint16 ramp_cnt = 0, mk_stop_cnt = 0;
+    static int32 out_L = 0, out_R = 0;
+    static uint8 mk_dia_run = 0, mk_cw_run = 0, cross_near_seen = 0;
+    static uint32 cross_frame = 0;
+    static double cross_start_cm = 0, last_white_cm = 0;
+    uint8 vision_fault;
 
-    // ★统一按 SPEED_PERCENT 缩放（新增）
+    LMotorSpeed = RMotorSpeed = 210;
+    if(Flag_stop == 1) LMotorSpeed = RMotorSpeed = 0;
+    else if(Flag_stop == 6) LMotorSpeed = RMotorSpeed = 175;
+    else if(Flag_stop == 8) LMotorSpeed = RMotorSpeed = 85;
+    else if(Flag_stop >= 2 && Flag_stop <= 7) LMotorSpeed = RMotorSpeed = 135;
     LMotorSpeed = LMotorSpeed * SPEED_PERCENT / 100;
     RMotorSpeed = RMotorSpeed * SPEED_PERCENT / 100;
 
-    // ★模式 0：软启动
-    //   加速：每 MOTOR_RAMP_TICKS 个 5ms 才 +1（40 x 5ms = 200ms 一格，0->31 约 6 秒）
-    //   减速 / 停车：立即生效，不做缓降（保证能随时停下）
-    #if (MOTOR_TEST_MODE == 0)
-        {
-            static uint16 ramp_cnt2 = 0;
-            static int32  out_L = 0, out_R = 0;
-
-            /* [2026-10-20] BUG FIX: the ramp only ever went UP.
-               Each 5 ms tick adds +1 to out_L/out_R whenever they are
-               below the target, but nothing pulls them down when the
-               target drops (Flag_stop 135 -> 85 or 0).  The car therefore
-               ratcheted up to the highest target it ever saw and stayed
-               there - the "sudden acceleration" and the high speed.
-               Now the ramp walks towards the target in BOTH directions. */
-            if(++ ramp_cnt2 >= MOTOR_RAMP_TICKS)
-            {
-                ramp_cnt2 = 0;
-                if(out_L < LMotorSpeed)      out_L ++;
-                else if(out_L > LMotorSpeed) out_L --;
-                if(out_R < RMotorSpeed)      out_R ++;
-                else if(out_R > RMotorSpeed) out_R --;
-            }
-
-            LMotorSpeed = out_L;
-            RMotorSpeed = out_R;
-        }
-    #endif
-
-    // ★模式 3：闭环测试 + 软启动，目标速度从 0 慢慢爬到设定值
-    #if (MOTOR_TEST_MODE == 3)
-        {
-            static uint16 ramp_cnt   = 0;
-            static int32  ramp_speed = 0;
-            if(++ ramp_cnt >= MOTOR_RAMP_TICKS)
-            {
-                ramp_cnt = 0;
-                if(ramp_speed < MOTOR_TEST_TARGET_SPEED) ramp_speed ++;
-            }
-            LMotorSpeed = ramp_speed;
-            RMotorSpeed = ramp_speed;
-        }
-    #endif
-
-    /* ================= [2026-10-22] 2026 标线：减速菱形 + 人行横道停车 =================
-       状态：0 空闲 -> 1 慢行(看到菱形) -> 2 停车计时(到人行横道) -> 3 已通过
-       只在该车放行后（Stop_1==1）才动作，避免上电摆车位置误触发。
-       本函数在 5ms 中断里跑，只能做简单计数。 */
-    if(Stop_1)
+    if(!Stop_1)
     {
-        static uint16 mk_stop_cnt = 0;
-        static uint8  mk_dia_run = 0, mk_cw_run = 0;   // ★连续确认计数
-
-        /* ★单帧误报不触发：要求连续几帧都看到 */
+        mk_state = 0;
+        mk_stop_cnt = 0;
+        mk_dia_run = mk_cw_run = cross_near_seen = 0;
+        mk_stop_elapsed_ms = mk_finish_reason = 0;
+        mk_clear_remaining_mm = MK_CLEAR_CM * 10;
+    }
+    else
+    {
         if(mk_dia_seen) { if(mk_dia_run < 255) mk_dia_run ++; } else mk_dia_run = 0;
-        if(mk_cw_seen)  { if(mk_cw_run  < 255) mk_cw_run  ++; } else mk_cw_run  = 0;
+        if(mk_cw_seen) { if(mk_cw_run < 255) mk_cw_run ++; } else mk_cw_run = 0;
 
-        if(mk_state == 0 && mk_dia_run >= MK_DIA_CONFIRM)      // 看到菱形 -> 慢行
+        if(mk_state == 0 || mk_state == 1)
         {
-            mk_state = 1;
-            Distance = 0;
-            Distance_ON = 1;
-        }
-        /* [2026-10-26] 横道停车不再要求「先看到菱形」。
-           原设计是 菱形->慢行(state 1)->横道->停车(state 2)，
-           但实测菱形很难连续确认（dia_rows>=6 很少满足），mk_state 一直停在 0，
-           于是横道那段代码根本执行不到 —— 终点前该停却不停。
-           现在 state 0 和 1 都可以直接被横道推进到停车。 */
-        else if(mk_state == 0 || mk_state == 1)
-        {
-            if(mk_cw_run >= MK_CW_CONFIRM && mk_cw_near >= MK_STOP_ROW)   // 看到横道 -> 停车
+            if(mk_cw_run >= MK_CW_CONFIRM && mk_cw_near >= MK_STOP_ROW)
             {
                 mk_state = 2;
                 mk_stop_cnt = 0;
+                mk_stop_elapsed_ms = 0;
             }
-            else if(mk_state == 1 && !mk_dia_seen && Distance > MK_GAP_CM) // 菱形已过 -> 恢复原速
+            else if(mk_state == 0 && mk_dia_run >= MK_DIA_CONFIRM)
+            {
+                mk_state = 1;
+                Distance = 0;
+                Distance_ON = 1;
+            }
+            else if(mk_state == 1 && !mk_dia_seen && Distance > MK_GAP_CM)
             {
                 Distance = 0;
                 Distance_ON = 0;
                 mk_state = 0;
             }
         }
-        else if(mk_state == 2)                                 // 停车计时
+        else if(mk_state == 2)
         {
-#if MK_FINAL_STOP && MK_ACT_ENABLE
-            (void)mk_stop_cnt;
-            /* User-requested debug behavior: one crosswalk, no timed restart. */
-            end_stopped = 1;
-#else
-            if(++ mk_stop_cnt >= MK_STOP_TICKS)
+            /* The five seconds start when encoder feedback says the vehicle is stationary. */
+            if(ABS(Lrealspeed) <= MK_STILL_COUNTS && ABS(Rrealspeed) <= MK_STILL_COUNTS)
+            {
+                if(mk_stop_cnt < MK_STOP_TICKS) mk_stop_cnt ++;
+            }
+            else mk_stop_cnt = 0;
+            mk_stop_elapsed_ms = mk_stop_cnt * 5;
+            if(mk_stop_cnt >= MK_STOP_TICKS)
             {
                 mk_state = 3;
-                mk_stop_cnt = 0;
+                cross_start_cm = last_white_cm = run_distance_cm;
+                cross_near_seen = 0;
+                cross_frame = vision_processed_frames;
                 Distance = 0;
                 Distance_ON = 0;
             }
-#endif
         }
-        else if(mk_state == 3)                                 // 过完横道回空闲
+        else if(mk_state == 3)
         {
-            if(mk_cw_run == 0) mk_state = 0;
-        }
-
-#if MK_ACT_ENABLE
-        if(mk_state == 1)
-        {
-            LMotorSpeed = LMotorSpeed * MK_DIA_SPEED_PCT / 100;
-            RMotorSpeed = RMotorSpeed * MK_DIA_SPEED_PCT / 100;
-        }
-        else if(mk_state == 2)
-        {
-            LMotorSpeed = RMotorSpeed = MK_PARK_DUTY;
-#if MK_FINAL_STOP
-            end_stopped = 1;
-#endif
-        }
-#else
-        (void)mk_stop_cnt;   /* 只记录模式：计时期照走，用于日志 */
-#endif
-
-        /* ============= [2026-10-26] 终点停车（按里程）=============
-           放在标线动作之后，作为最后一道：不管前面怎么减速，到了就断电机。
-           Run_Odo 只在前进时累加，停车后不会再涨。 */
-        if(end_stop_cm > 0 && !end_stopped && Run_Odo >= (double)end_stop_cm)
-        {
-            end_stopped = 1;
-        }
-        /* Keep the stop latched until the pre-start reset clears it. */
-        if(end_stopped)
-        {
-            LMotorSpeed = 0;
-            RMotorSpeed = 0;
+            if(cross_frame != vision_processed_frames)
+            {
+                cross_frame = vision_processed_frames;
+                if(mk_near_white)
+                {
+                    cross_near_seen = 1;
+                    last_white_cm = run_distance_cm;
+                }
+            }
+            if(run_distance_cm - last_white_cm < MK_CLEAR_CM)
+                mk_clear_remaining_mm = (uint16)((MK_CLEAR_CM - (run_distance_cm - last_white_cm)) * 10);
+            else mk_clear_remaining_mm = 0;
+            if(cross_near_seen && run_distance_cm - last_white_cm >= MK_CLEAR_CM)
+            {
+                mk_state = 4;
+                mk_finish_reason = 1;
+            }
+            else if(run_distance_cm - cross_start_cm >= MK_CROSS_LIMIT_CM)
+            {
+                mk_state = 4;
+                mk_finish_reason = 2;  /* Distance safeguard, not verified visual clearance. */
+            }
         }
     }
+
+#if MK_ACT_ENABLE
+    if(mk_state == 1)
+    {
+        LMotorSpeed = LMotorSpeed * MK_DIA_SPEED_PCT / 100;
+        RMotorSpeed = RMotorSpeed * MK_DIA_SPEED_PCT / 100;
+    }
+    else if(mk_state == 2) LMotorSpeed = RMotorSpeed = MK_PARK_DUTY;
+    else if(mk_state == 3)
+    {
+        if(LMotorSpeed > MK_CROSS_SPEED) LMotorSpeed = MK_CROSS_SPEED;
+        if(RMotorSpeed > MK_CROSS_SPEED) RMotorSpeed = MK_CROSS_SPEED;
+    }
+#if MK_FINAL_STOP
+    if(mk_state == 4) end_stopped = 1;
+#endif
+#endif
+    if(Stop_1 && end_stop_cm > 0 && Run_Odo >= (double)end_stop_cm) end_stopped = 1;
+
+    /* Missing camera data is always a stop condition. Lane paint may hide the
+       boundaries while crossing, so only that known low-speed phase allows it. */
+    vision_fault = (uint8)(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS ||
+                          (mk_state != 3 && track_bad_ticks >= TRACK_LOSS_TICKS));
+    drive_inhibit = (uint8)(!Stop_1 || end_stopped || Flag_stop == 1 || vision_fault ||
+                           (MK_ACT_ENABLE && mk_state == 2));
+#if MOTOR_TEST_MODE == 0
+    if(drive_inhibit)
+    {
+        out_L = out_R = 0;
+        ramp_cnt = 0;
+    }
+    else if(++ ramp_cnt >= MOTOR_RAMP_TICKS)
+    {
+        ramp_cnt = 0;
+        if(out_L < LMotorSpeed) out_L ++; else if(out_L > LMotorSpeed) out_L --;
+        if(out_R < RMotorSpeed) out_R ++; else if(out_R > RMotorSpeed) out_R --;
+    }
+    LMotorSpeed = out_L;
+    RMotorSpeed = out_R;
+#elif MOTOR_TEST_MODE == 3
+    if(drive_inhibit) { out_L = out_R = 0; ramp_cnt = 0; }
+    else if(++ ramp_cnt >= MOTOR_RAMP_TICKS)
+    {
+        ramp_cnt = 0;
+        if(out_L < MOTOR_TEST_TARGET_SPEED) out_L ++;
+        out_R = out_L;
+    }
+    LMotorSpeed = out_L;
+    RMotorSpeed = out_R;
+#endif
+    if(drive_inhibit) LMotorSpeed = RMotorSpeed = 0;
+}
+
+uint32 Tof_Get_Age_Ms(void)
+{
+    uint32 ticks;
+    if(!tof_has_sample) return 0xFFFFFFFFUL;
+    ticks = isr_tick_5ms - tof_sample_tick;
+    if(ticks > 858993459UL) return 0xFFFFFFFFUL;
+    return ticks * 5UL;
+}
+
+uint16 Tof_Get_Distance(void)
+{
+    if(!tof_has_sample || (uint32)(isr_tick_5ms - tof_sample_tick) > TOF_FRESH_TICKS ||
+       tof_sample_mm < 10 || tof_sample_mm > 4000) return 8192;
+    return tof_sample_mm;
 }
 
 //最小二乘法求散点拟合函数y=a+bx的参数a和b

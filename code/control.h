@@ -10,6 +10,14 @@ extern uint8 steer_mode;
 extern int32 steer_raw_target;
 extern int16 lane_k;
 extern volatile uint32 vision_processed_frames;
+extern volatile uint32 tof_sample_tick;
+extern volatile uint8 tof_has_sample;
+extern uint16 vision_age_ticks, track_bad_ticks;
+extern uint8 drive_inhibit, mk_finish_reason;
+extern uint16 mk_stop_elapsed_ms, mk_clear_remaining_mm;
+extern double run_distance_cm;
+uint16 Tof_Get_Distance(void);
+uint32 Tof_Get_Age_Ms(void);
 extern int16 Steer_Trim;   // [2026-10-22] 转向微调，正值往左
 extern int16 Steer_Mid;    // [2026-10-22] 运行时舵机中位（掉电保存）
 void Steer_Set_Mid(int16 m);   // [2026-10-22] 设中位并同步左右限幅

@@ -40,6 +40,7 @@ extern volatile uint16 stop_aaa;
 extern volatile uint16 stop_run;
 extern volatile uint8  stop_now, stop_latch;
 extern volatile uint16 tof_sample_mm;
+extern volatile uint32 isr_tick_5ms;
 extern volatile uint8  tof_new_sample;
 #pragma section all "cpu1_dsram"
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU1的RAM中
@@ -81,6 +82,8 @@ void core1_main(void)
             {
                 dl1b_finsh_flag = 0;
                 tof_sample_mm   = dl1b_distance_mm;
+                tof_sample_tick = isr_tick_5ms;
+                tof_has_sample = 1;
                 tof_new_sample  = 1;
             }
         }

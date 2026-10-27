@@ -119,7 +119,7 @@ void LuUI_Show_page1(void)
             mt9v03x_finish_flag=0;
         }
 
-    ips200_show_int(Show_X[1],Show_Y[7],dl1b_distance_mm,4);
+    ips200_show_int(Show_X[1],Show_Y[7],Tof_Get_Distance(),4);
 
     /* [2026-10-22] page3 新增 STrim 一行后，最下面一行 y 会超屏；
        这里改成 uint8 用 show_int 画，3 位 = 150+26=176，留足余量。
@@ -295,7 +295,7 @@ void LuUI_Show_page3(void)
        A  = 是否已布防（1 = 看够了 1 秒空旷，可以挥手）
        H  = 最近 12 个样本里被判为"近距"的个数，到 8 就发车 */
     ips200_show_string(16,  Show_Y[15], "To");
-    ips200_show_int(50,     Show_Y[15], dl1b_distance_mm, 5);
+    ips200_show_int(50,     Show_Y[15], Tof_Get_Distance(), 5);
     ips200_show_string(105, Show_Y[15], "A");
     ips200_show_int(130,    Show_Y[15], start_ready, 1);
     ips200_show_string(175, Show_Y[15], "H");

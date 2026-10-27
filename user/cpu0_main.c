@@ -39,7 +39,7 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (25)   // V25: validate cone-group geometry; keep recognition and action enabled
+#define CAR_LOG_VERSION           (26)   // V26: lane validity, stop-cross-park sequence, fresh ToF diagnostics
 /* [2026-10-22] 发车方式
    0 = 不自动发车，只能人工放行（调试用；板上只有 S2~S5，没有 S1）
    1 = ToF 遮挡发车（当前，比赛要求非接触发车） */
@@ -67,6 +67,7 @@ static uint16 car_log_cnt  = 0;
 static uint32 car_log_tick = 0;
 
 extern uint8 end_stopped;
+extern volatile uint8 mk_near_white;
 extern uint16 steer_guard_bits;
 extern int32  steer_target;
 extern volatile uint32 isr_tick_5ms;
@@ -155,13 +156,13 @@ int core0_main(void)
         // ★心跳：每 CAR_LOG_PERIOD_LOOPS 圈发一行关键量，电脑端 car_log.py 里看
         if(++ car_log_cnt >= CAR_LOG_PERIOD_LOOPS)
         {
-            static char log_buf[1024];   // CPU0 stack is 2 KB; keep telemetry storage off the stack.
+            static char log_buf[1536];   // CPU0 stack is 2 KB; keep telemetry storage off the stack.
             car_log_cnt = 0;
             car_log_tick ++;
             /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 22 行左右边线与宽度；
                T0 = Diedai 实际二值阈值；zy = 阈值系数+偏置；dl = Differ_light；
                Rm = Rhombus_Flag；To = DL1B 距离 */
-            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d GB=0x%04X TP=%ld FC=%lu H128=%lu H192=%lu CN=%d/%d/%d CWD=%d/%d/%d/%d/%d SO=%d A=%d SR=%d SM=%d RT=%ld LK=%d MS=%lu PC=%lu VS=%ld/%ld VE=%d/%d VP=%ld/%ld ES=%d FS=%d CA=%d CG=%d GP=%d/%d/%d/%d\r\n",
+            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d GB=0x%04X TP=%ld FC=%lu H128=%lu H192=%lu CN=%d/%d/%d CWD=%d/%d/%d/%d/%d SO=%d A=%d SR=%d SM=%d RT=%ld LK=%d MS=%lu PC=%lu VS=%ld/%ld VE=%d/%d VP=%ld/%ld ES=%d FS=%d CA=%d CG=%d GP=%d/%d/%d/%d DH=%d VL=%d/%d DC=%ld WT=%d CL=%d CE=%d NW=%d TD=%d TA=%lu\r\n",
                 (int)CAR_LOG_VERSION,
                 (unsigned long)car_log_tick, (int)Point, (int)Line_Count, (int)Result_Far_Row,
                 (int)Left_Line[22], (int)Right_Line[22], (int)Width_Real[22],
@@ -185,7 +186,11 @@ int core0_main(void)
                  (long)LSpeedPWM, (long)RSpeedPWM,
                  (int)end_stopped, (int)MK_FINAL_STOP, (int)CONE_ACT_ENABLE,
                  (int)cone_group_ok, (int)cone_group_support,
-                 (int)cone_group_span_x, (int)cone_group_span_y, (int)cone_group_error);
+                 (int)cone_group_span_x, (int)cone_group_span_y, (int)cone_group_error,
+                 (int)drive_inhibit, (int)vision_age_ticks, (int)track_bad_ticks,
+                 (long)run_distance_cm, (int)mk_stop_elapsed_ms, (int)mk_clear_remaining_mm,
+                 (int)mk_finish_reason, (int)mk_near_white,
+                 (int)Tof_Get_Distance(), (unsigned long)Tof_Get_Age_Ms());
             wifi_spi_send_string(log_buf);
         }
 #endif
