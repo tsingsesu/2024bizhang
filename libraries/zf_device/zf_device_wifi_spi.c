@@ -109,7 +109,7 @@ static uint8 wifi_spi_wait_idle (uint32 wait_time)
     }
     else if(wait_time <= 10000)
     {
-        wait_ms = 3000;
+        wait_ms = 5000;   // ★连 WiFi 原来只等 3 秒，模块实际要 4~6 秒
     }
     else
     {

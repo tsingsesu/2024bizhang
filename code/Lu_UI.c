@@ -17,6 +17,7 @@
 /* [2026-10-20] lu_ui_dbg_log is forwarded from CPU1 so the print happens on
    CPU0 (the only core owning the debug UART).  Keep it 0 during matches. */
 volatile uint8 lu_ui_dbg_log = 0;
+uint8 lcd_raw_view = 1;   // ★屏幕显示：1=灰度原图  0=二值图（长按 S4 切）
 // [2026-10-21] 与外界通信已删除：这里不再 printf，保留空函数供 cpu0_main 调用
 void LuUI_Log_Poll(void)
 {
@@ -35,8 +36,8 @@ int8 Differ = 13;    // ★实测调好的阈值偏移（原 0）
 // ================= ★摄像头曝光 / 增益（调参界面可改） =================
 // 曝光：MT9V03X_EXP_TIME_DEF 默认 500，范围约 50~2000，越大越亮
 // 增益：MT9V034 全局增益寄存器 0x35，范围 16~64，越大越亮（噪点也越多）
-uint16 cam_exposure = 1010;      // ★实测调好的曝光（原 500）
-uint8  cam_gain     = 44;
+uint16 cam_exposure = 700;       /* [2026-10-26] 2400->700：换到亮场地后实测 ExpTime 700 / Gain 16，屏幕 iavg=186、imax=255 */
+uint8  cam_gain     = 16;        /* [2026-10-26] 64->16：亮场地不需要增益，跟屏幕一致 */
 
 uint8 steer_mid_cal = 0;   // [2026-10-22] 1 = 舵机中位校准模式（长按 S2 切换）      // ★实测调好的增益（原 63）          // ★默认增益（原 63 偏高，噪点大）
 
@@ -57,13 +58,18 @@ void cam_param_apply(void)
  *  功能说明：屏幕显示页
  *
  *************************************************************************/
+/* [2026-10-24] 锥形标识别结果（必须在 page1 之前声明）*/
+extern uint8 cone_px[], cone_py[];
+extern volatile uint8 cone_pts, cone_cnt, cone_near, cone_ok;
+extern volatile int16 cone_x;
+
 void LuUI_Show_page1(void)
 {
     if(mt9v03x_finish_flag)       //总钻风图像
         {
             /* [2026-10-20] DIAG: show the RAW camera image in grayscale.
                Set to 0 to go back to the binary (imagebinary) view. */
-            if(LU_IMG_RAW_PREVIEW)
+            if(lcd_raw_view)
                 ips200_show_gray_image(0, 0,*mt9v03x_image, MT9V03X_W, MT9V03X_H, 240, 140, 0);
             else
                 ips200_show_gray_image(0, 0,*imagebinary, MT9V03X_W, MT9V03X_H, 240, 140, LU_IMG_THRESHOLD);   /* [2026-10-20] was zyuzhi */     // 显示二值化图像
@@ -93,6 +99,22 @@ void LuUI_Show_page1(void)
             for(uint8 j = 2; j < 138; j++)
             {
                 ips200_draw_point(64*2,j,RGB565_PURPLE);
+            }
+
+            /* [2026-10-24] 锥形标识别结果：青色点 = 被判为"锥桶"的粗白块
+               看图就能确认识别对不对：点应该正好落在每个锥桶上 */
+            /* 用红色 3x3 方块：二值图是黑白底，红色在两种底色上都看得见，
+               青色画在白块上几乎看不见（之前就是这个问题）。 */
+            for(uint8 k = 0; k < cone_pts; k ++)
+            {
+                uint16 dx = (uint16)(2 * cone_px[k]);
+                uint16 dy = (uint16)(2 * cone_py[k]);
+                ips200_drawpoint1(dx,   dy,   RGB565_RED);
+                ips200_drawpoint1(dx+1, dy,   RGB565_RED);
+                ips200_drawpoint1(dx,   dy+1, RGB565_RED);
+                ips200_drawpoint1(dx+1, dy+1, RGB565_RED);
+                ips200_drawpoint1(dx+2, dy+1, RGB565_RED);
+                ips200_drawpoint1(dx+1, dy+2, RGB565_RED);
             }
             mt9v03x_finish_flag=0;
         }
@@ -179,6 +201,11 @@ void LuUI_Show_page2(void)
 extern uint8 wifi_init_step;
 extern char  wifi_spi_version[12];   // ★模块固件版本（能读出=SPI通）
 extern int16 Steer_Trim;
+extern int16 lane_k;
+extern int32 steer_target;
+/* [2026-10-24] ToF 实时诊断：发车判定就看这三个数 */
+extern volatile uint16 start_base, start_hold;
+extern volatile uint8  start_ready;
 extern uint8 cam_send_raw;
 extern uint8 cam_init_ret;
 extern vuint8 mt9v03x_finish_flag;
@@ -192,7 +219,7 @@ void LuUI_Show_page3(void)
 {
     uint8 i;
 
-    // ★4 个可调参数，'>' 指向当前选中的那个
+    /* ===== 6 个可调参数：' > ' 指向当前选中项 ===== */
     ips200_show_string(16, Show_Y[1], "ZYuzhi");
     ips200_show_int(150, Show_Y[1], zyuzhi, 4);
 
@@ -205,71 +232,76 @@ void LuUI_Show_page3(void)
     ips200_show_string(16, Show_Y[4], "Gain");
     ips200_show_int(150, Show_Y[4], cam_gain, 4);
 
-    for(i = 1; i <= 5; i ++)
+    ips200_show_string(16, Show_Y[5], "STrim");
+    ips200_show_int(150, Show_Y[5], Steer_Trim, 4);
+
+    ips200_show_string(16, Show_Y[6], "LaneK");
+    ips200_show_int(150, Show_Y[6], lane_k, 4);
+
+    for(i = 1; i <= 6; i ++)
     {
         if(i == (Parameter_Choose_flag + 1)) ips200_show_char(0, Show_Y[i], '>');
         else                                  ips200_show_char(0, Show_Y[i], ' ');
     }
 
+    /* ===== 识别状态 ===== */
+    ips200_show_string(16,  Show_Y[7], "T0");
+    ips200_show_int(60,     Show_Y[7], diedai_threshold, 3);
+    ips200_show_string(110, Show_Y[7], "W");
+    ips200_show_int(140,    Show_Y[7], Width_Real[22], 3);
 
-    ips200_show_string(16, Show_Y[10], "Ver:");
-    {
-        char ver_buf[13];                       // ★版本字符串没有 \0，必须自己截断
-        uint8 k;
-        for(k = 0; k < 12; k ++) ver_buf[k] = wifi_spi_version[k];
-        ver_buf[12] = 0;
-        ips200_show_string(60, Show_Y[10], ver_buf);
-    }
+    ips200_show_string(16,  Show_Y[8], "L");
+    ips200_show_int(60,     Show_Y[8], Left_Line[22], 3);
+    ips200_show_string(110, Show_Y[8], "R");
+    ips200_show_int(140,    Show_Y[8], Right_Line[22], 3);
 
-    ips200_show_string(16, Show_Y[9], "WiFiStep");
-    ips200_show_int(150, Show_Y[9], wifi_init_step, 3);
+    ips200_show_string(16,  Show_Y[9], "TP");
+    ips200_show_int(60,     Show_Y[9], steer_target, 3);
+    ips200_show_string(110, Show_Y[9], "P");
+    ips200_show_int(140,    Show_Y[9], Point, 3);
 
-    ips200_show_string(16, Show_Y[8], "WiFiRet");
-    ips200_show_int(150, Show_Y[8], wifi_init_ret, 3);
+    ips200_show_string(16,  Show_Y[10], "imin");
+    ips200_show_int(60,     Show_Y[10], diedai_img_min, 3);
+    ips200_show_string(110, Show_Y[10], "imax");
+    ips200_show_int(164,    Show_Y[10], diedai_img_max, 3);
 
-    ips200_show_string(16, Show_Y[6], "min/max/avg");   // [2026-10-22] 图像亮度，替代原提示行
+    ips200_show_string(16,  Show_Y[11], "iavg");
+    ips200_show_int(60,     Show_Y[11], diedai_img_avg, 3);
+    ips200_show_string(110, Show_Y[11], "LC");
+    ips200_show_int(140,    Show_Y[11], Line_Count, 3);
 
-    ips200_show_string(16,  Show_Y[13], "Cnt");
-    ips200_show_int(60,     Show_Y[13], mt9v03x_frame_cnt, 5);
-    ips200_show_string(120, Show_Y[13], "Px");
-    ips200_show_int(150,    Show_Y[13], mt9v03x_image[60][94], 3);
-    ips200_show_int(184,    Show_Y[13], mt9v03x_image[20][40], 3);
+    ips200_show_string(16,  Show_Y[12], "Mid");
+    ips200_show_int(60,     Show_Y[12], Steer_Mid, 4);
+    ips200_show_string(140, Show_Y[12], "Trm");
+    ips200_show_int(180,    Show_Y[12], Steer_Trim, 3);
+    if(steer_mid_cal) ips200_show_string(110, Show_Y[12], "CAL");
 
-    ips200_show_string(16,  Show_Y[12], "T0");
-    ips200_show_int(70,     Show_Y[12], diedai_threshold, 3);
-    ips200_show_string(120, Show_Y[12], "HoldS5=Save");
-    ips200_show_string(16,  Show_Y[15], "Cmd");
-    ips200_show_int(70,     Show_Y[15], wifi_dbg_cmd, 3);
-    ips200_show_string(120, Show_Y[15], "INT");
-    ips200_show_int(184,    Show_Y[15], wifi_dbg_int, 2);
-    ips200_show_string(16,  Show_Y[14], "HoldS4:Raw/Bin view");
+    ips200_show_string(16,  Show_Y[13], "Duty");
+    ips200_show_int(70,     Show_Y[13], SD5_Duty, 4);
+    ips200_show_string(150, Show_Y[13], "WiFi");
+    ips200_show_int(200,    Show_Y[13], wifi_init_step, 2);
 
-    ips200_show_string(16,  Show_Y[11], "Cam");
-    ips200_show_int(70,     Show_Y[11], cam_init_ret, 3);
-    ips200_show_string(120, Show_Y[11], "Frame");
-    ips200_show_int(180,    Show_Y[11], mt9v03x_finish_flag, 3);
+    ips200_show_string(16,  Show_Y[14], "CW");
+    ips200_show_int(50,     Show_Y[14], mk_cw_seen, 1);
+    ips200_show_int(70,     Show_Y[14], mk_cw_score, 2);
+    ips200_show_string(110, Show_Y[14], "DI");
+    ips200_show_int(140,    Show_Y[14], mk_dia_seen, 1);
+    ips200_show_int(160,    Show_Y[14], mk_dia_score, 2);
+    ips200_show_string(196, Show_Y[14], "MK");
+    ips200_show_int(220,    Show_Y[14], mk_state, 1);
 
-    /* [2026-10-22] 图像亮度：上电不读 flash 后，zy 用代码默认 63；
-       这三项用来判断摄像头是不是太暗（iavg 正常应在 60~150）。 */
-    ips200_show_string(16,  Show_Y[6], "Img");
-    ips200_show_int(50,      Show_Y[6], diedai_img_min, 3);
-    ips200_show_int(90,      Show_Y[6], diedai_img_max, 3);
-    ips200_show_int(130,     Show_Y[6], diedai_img_avg, 3);
-    ips200_show_string(170, Show_Y[6], cam_set_exp_ret ? "E!" : "Eok");
-    ips200_show_string(200, Show_Y[6], cam_set_gain_ret ? "G!" : "Gok");
-    /* [2026-10-22] 舵机中位 + 微调：标签别互相覆盖（原来 Mid 值画到 120 会盖住 Trm） */
-    ips200_show_string(16,  Show_Y[5], "Mid");
-    ips200_show_int(44,     Show_Y[5], Steer_Mid, 4);
-    ips200_show_string(132, Show_Y[5], "Trm");
-    ips200_show_int(164,    Show_Y[5], Steer_Trim, 3);
-    if(steer_mid_cal) ips200_show_string(200, Show_Y[5], "CAL");
-
-    ips200_show_string(16, Show_Y[7], "RawCmd");
-    ips200_show_int(80,  Show_Y[7], wifi_raw_cmd, 3);
-    ips200_show_int(120, Show_Y[7], wifi_raw_dat[0], 3);
-    ips200_show_int(160, Show_Y[7], wifi_raw_dat[1], 3);
-    ips200_show_int(200, Show_Y[7], wifi_raw_dat[2], 3);
+    /* ★ToF 实时诊断（2026-10-24）：挥手时看这三个数怎么变
+       To = 当前读数（8192 = 前方空旷，测不到东西）
+       A  = 是否已布防（1 = 看够了 1 秒空旷，可以挥手）
+       H  = 最近 12 个样本里被判为"近距"的个数，到 8 就发车 */
+    ips200_show_string(16,  Show_Y[15], "To");
+    ips200_show_int(50,     Show_Y[15], dl1b_distance_mm, 5);
+    ips200_show_string(105, Show_Y[15], "A");
+    ips200_show_int(130,    Show_Y[15], start_ready, 1);
+    ips200_show_string(175, Show_Y[15], "H");
+    ips200_show_int(200,    Show_Y[15], start_hold, 2);
 }
+
 void LuUI_Show(void)
 {
     if(Page_Clear_flag){ ips200_clear(); Page_Clear_flag = 0; }
@@ -335,7 +367,7 @@ void LuUI_Key(void)
         else if(Page_Choose_flag == 2)
         {
             Parameter_Choose_flag ++;
-            if(Parameter_Choose_flag > 4) Parameter_Choose_flag = 0;   // 0=zyuzhi 1=Differ 2=曝光 3=增益 4=转向
+            if(Parameter_Choose_flag > 5) Parameter_Choose_flag = 0;   // 0=zyuzhi 1=Differ 2=曝光 3=增益 4=转向
             Page_Clear_flag = 1;
         }
         Key_Protect[KEY_RIGHT] = 1;
@@ -360,7 +392,8 @@ void LuUI_Key(void)
                 case 1: if(Differ > -50) Differ -= 1; break;   // [2026-10-22] 与 flash 校验范围一致
                 case 2: if(cam_exposure > 60) { cam_exposure -= 100; cam_param_apply(); } break;
                 case 3: if(cam_gain > 16)   { cam_gain     -= 4;  cam_param_apply(); } break;
-                default: if(Steer_Trim > -60) Steer_Trim -= 2; break;
+                case 4: if(Steer_Trim > -60) Steer_Trim -= 2; break;
+                default: if(lane_k > 20)     lane_k     -= 2; break;
             }
         }
         Key_Protect[KEY_DOWN] = 1;
@@ -384,8 +417,9 @@ void LuUI_Key(void)
                 case 0: if(zyuzhi < 255) zyuzhi += 4; break;
                 case 1: if(Differ < 50) Differ += 1; break;
                 case 2: if(cam_exposure < 10000) { cam_exposure += 100; cam_param_apply(); } break;
-                case 3: if(cam_gain < 64)      { cam_gain     += 4;  cam_param_apply(); } break;
-                default: if(Steer_Trim < 60)  Steer_Trim += 2; break;
+                case 3: if(cam_gain < 124)     { cam_gain     += 4;  cam_param_apply(); } break;  // [2026-10-24] 64=1.0x增益，放开到124(0x7C)=1.94x；0x80是符号位不能用
+                case 4: if(Steer_Trim < 60)  Steer_Trim += 2; break;
+                default: if(lane_k < 95)      lane_k     += 2; break;
             }
         }
         Key_Protect[KEY_LEFT] = 1;
@@ -419,7 +453,7 @@ void LuUI_Key(void)
         {
             if(0 == view_done)
             {
-                cam_send_raw = (cam_send_raw) ? 0 : 1;
+                lcd_raw_view = (lcd_raw_view) ? 0 : 1;
                 view_done = 1;
             }
         }
@@ -437,11 +471,12 @@ void LuUI_Key(void)
         {
             if(0 == reset_done)
             {
-                zyuzhi       = 63;   // [2026-10-22] 跟默认值一致
+                zyuzhi       = 95;   // [2026-10-22] 跟默认值一致
                 Differ       = 13;
-                Steer_Trim   = 0;    // [2026-10-22] 恢复默认时转向也要回 0
-                cam_exposure = 1010;
-                cam_gain     = 44;
+                Steer_Trim   = 16;
+                lane_k       = 75;    // [2026-10-22] 恢复默认时转向也要回 0
+                cam_exposure = 700;    // [2026-10-26] 长按 DOWN 恢复默认时也用 700
+                cam_gain     = 16;     // [2026-10-26] 同上
                 cam_param_apply();
                 reset_done   = 1;
             }
@@ -464,6 +499,7 @@ void Parameter_Save(void)
     flash_union_buffer[3].float_type = (float)cam_gain;
     flash_union_buffer[5].float_type = (float)Steer_Trim;
     flash_union_buffer[6].float_type = (float)Steer_Mid;    // [2026-10-22] 舵机中位
+    flash_union_buffer[7].float_type = (float)lane_k;
     flash_union_buffer[4].float_type = 12345.0f;          // ★有效标记
     flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_INDEX);
     /* [2026-10-22] 同时存一份到第 17 页：现场调好的值先冻结住，
@@ -477,6 +513,7 @@ void Parameter_Save(void)
     flash_union_buffer[3].float_type = (float)cam_gain;
     flash_union_buffer[5].float_type = (float)Steer_Trim;
     flash_union_buffer[6].float_type = (float)Steer_Mid;
+    flash_union_buffer[7].float_type = (float)lane_k;
     flash_union_buffer[4].float_type = 12345.0f;
     if(EEPROM_PAGE_NUM > FLASH_PAGE_BAK)
         flash_write_page_from_buffer(FLASH_SECTION_INDEX, FLASH_PAGE_BAK);
@@ -488,6 +525,7 @@ void Parameter_Read(void)
 #if PARAM_TUNING
     /* [2026-10-22] 调参阶段其它参数用代码默认值，但舵机中位是现场校准出来的，
        必须从 flash 恢复，否则每次上电都被打回 857。 */
+    #if FLASH_RESTORE_STEER_MID   /* [2026-10-26] 调参阶段不用 flash 里的旧中位 */
     if(EEPROM_PAGE_NUM > FLASH_PAGE_BAK)      /* [2026-10-22] 页号越界会触发 zf_assert */
     {
     flash_buffer_clear();
@@ -498,6 +536,7 @@ void Parameter_Read(void)
         if(m >= 700.0f && m <= 1000.0f) Steer_Mid = (int16)m;
     }
     }
+    #endif
     return;
 #endif
     float z, d, e, g, mark;
@@ -520,9 +559,11 @@ void Parameter_Read(void)
     if(z >= 20.0f  && z <= 255.0f)   zyuzhi       = (uint8)z;
     if(d >= -50.0f && d <= 50.0f)    Differ       = (int8)d;
     if(e >= 60.0f  && e <= 10000.0f) cam_exposure = (uint16)e;
-    if(g >= 16.0f  && g <= 64.0f)    cam_gain     = (uint8)g;
+    if(g >= 16.0f  && g <= 124.0f)   cam_gain     = (uint8)g;   // [2026-10-24] 随增益上限一起放到 124
     if(flash_union_buffer[5].float_type >= -60.0f && flash_union_buffer[5].float_type <= 60.0f)
         Steer_Trim = (int16)flash_union_buffer[5].float_type;
+    if(flash_union_buffer[7].float_type >= 20.0f && flash_union_buffer[7].float_type <= 95.0f)
+        lane_k = (int16)flash_union_buffer[7].float_type;
 }
 
 /*

@@ -59,68 +59,71 @@ IFX_INTERRUPT(cc60_pit_ch1_isr, 0, CCU6_0_CH1_ISR_PRIORITY)//5ms
 
 }
 
+extern volatile uint16 tof_sample_mm;
+extern volatile uint8  tof_new_sample;
+extern volatile uint32 isr_tick_5ms;
+
 IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
 {
     interrupt_global_enable(0);                     // 开启中断嵌套
     pit_clear_flag(CCU61_CH0);
     Light();
-    /* ================= [2026-10-22] 非接触发车（比赛规则要求） =================
+    /* ================= [2026-10-24] 非接触发车（比赛规则要求） =================
        规则：车辆初始化完成后必须用「挥手 / 遮挡」等非接触方式出发，禁止按键或遥控。
-       本机 ToF 装得低、平时一直读地面 40~130mm，所以不能再用「<300mm 就算遮挡」——
-       那样地面本身就会被当成手。改为相对基线检测：
-         1) 上电后约 1 秒，用有效读数求基线
-         2) 基线在地面段(10~800mm)：读数比基线近 25% 以上 = 有东西挡在光束里（手）
-         3) 基线为空旷(>=800mm 或采样无效)：任何有效读数 = 前方出现物体
-         4) 连续 1.5 秒满足才发车；手移开立刻清零
-       8192 是通信超时的无效值，一律不参与判断。 */
+       本机 ToF 朝前安装：
+         前方 4m 内没东西 → 读到 8192（cpu1 过滤掉，不传给这里）
+         手伸到前面       → 出现 10~60mm 的近距读数
+       判定：
+         1) 先看够 1 秒"前方空旷"（一个有效样本都没有）才布防
+         2) 布防后，最近 12 个样本里 8 个是 <50cm 的近距 → 发车
+         3) 车停在墙边时一开始就读到近距，布不了防，不会抢跑
+       注：旧版用"相对基线"，但基线是在手挡着的时候建立的，
+           之后挥手跟基线一模一样，永远判不出。 */
+/* ★ToF 发车判定参数（2026-10-24 重写，不用基线）
+   朝前看：前方 4m 内没东西 → 读到 8192（cpu1 过滤掉，这里收不到）
+           手伸到前面     → 出现 10~60mm 的近距读数
+   原来按"相对基线"判，结果基线是用手挡着时建立的，之后挥手跟基线一样，永远判不出。 */
+#define TF_NEAR_MM   (500)   /* 50cm 以内才算"有东西挡在前面" */
+#define TF_WIN_N     (12)    /* 滚动窗口：最近 12 个有效样本 */
+#define TF_HIT_N     (8)     /* 12 个里 8 个是近距 → 发车 */
+#define TF_ARM_TICKS (200)   /* 5ms × 200 = 1 秒"前方空旷"才布防（防抢跑） */
     {
-        static uint16 tf_ema   = 0;    // 有效读数的慢滤波（代表"地面/前方"距离）
-        static uint8  tf_n     = 0;    // 连续有效读数计数（用于建立初值）
-        static uint16 tf_win   = 0;    // 1 秒窗口计数
-        static uint16 tf_hits  = 0;    // 窗口内"比基线近 10mm"的帧数
+        static uint16 tf_hist      = 0;   // 最近 TF_WIN_N 个样本的"有东西"位图
+        static uint8  tf_hist_n    = 0;   // 位图里已累计的样本数
+        static uint8  tf_armed     = 0;   // 已经看到过 1 秒空旷 → 允许发车
+        static uint32 tf_last_tick = 0;   // 上一个有效样本的时刻（5ms 计数）
+        uint8 tf_i, tf_hits_now = 0;
 
         if(!Stop_1)
         {
-            uint16 d = dl1b_distance_mm;
-            uint8  valid = (d > 10 && d < 800);     // 8192 = 超时 / 低于最小量程
+            /* ① 1 秒没有新样本 = 前方是空的 → 布防 */
+            if((uint32)(isr_tick_5ms - tf_last_tick) >= TF_ARM_TICKS)
+                tf_armed = 1;
 
-            if(tf_n < 50)
+            /* ② 只在 cpu1 报到"测到新距离"时处理（8192 早就被滤掉了） */
+            if(tof_new_sample)
             {
-                /* 前 0.5 秒：用有效读数建立滤波初值，不做判断 */
-                if(valid)
-                {
-                    tf_n ++;
-                    tf_ema = (1 == tf_n) ? d : (uint16)(((uint32)tf_ema * 7 + d) / 8);
-                }
-            }
-            else
-            {
-                if(valid)
-                {
-                    tf_ema = (uint16)(((uint32)tf_ema * 7 + d) / 8);
-                }
+                uint16 d = tof_sample_mm;
+                uint8  hit;
 
-                /* [2026-10-22] 用 1 秒窗口做多数表决，而不是要求 100 帧连续满足。
-                   日志里 To 在 27~50 之间跳、还夹着 8192，连续判据永远凑不满；
-                   手挡上去时绝大多数帧会低于基线，用比例判断更稳。 */
-                if(++ tf_win >= 60)      /* 0.6 秒窗口 */
-                {
-                    if(tf_hits >= 42) start_trigger = 1;     // 0.6 秒内 70% 的帧变近
-                    tf_win  = 0;
-                    tf_hits = 0;
-                }
-                /* [2026-10-22] 只有「有效读数且明显更近」才算遮挡。
-                   8192 是通信超时/量程外，不能算作遮挡——否则 ToF 一抖动，
-                   计数就会自己涨到 70，车会莫名其妙自己发车。 */
-                if(valid && ((uint16)(d + 10) < tf_ema))
-                {
-                    tf_hits ++;
-                }
+                tof_new_sample = 0;
+                tf_last_tick   = isr_tick_5ms;
+
+                hit = (tf_armed && d >= 10 && d < TF_NEAR_MM) ? 1 : 0;
+
+                tf_hist = (uint16)((tf_hist << 1) | hit);
+                if(tf_hist_n < TF_WIN_N) tf_hist_n ++;
+
+                for(tf_i = 0; tf_i < TF_WIN_N; tf_i ++)
+                    if((tf_hist >> tf_i) & 1) tf_hits_now ++;
+
+                if(tf_hist_n >= TF_WIN_N && tf_hits_now >= TF_HIT_N)
+                    start_trigger = 1;
             }
 
-            start_ready = (tf_n >= 50);
-            start_base  = tf_ema;
-            start_hold  = tf_hits;
+            start_ready = tf_armed;          /* 1 = 已布防，可以挥手了 */
+            start_hold  = tf_hits_now;       /* 最近 12 个里被判定"近距"的个数，到 8 发车 */
+            start_base  = dl1b_distance_mm;  /* 屏幕直接看当前读数 */
         }
     }
 

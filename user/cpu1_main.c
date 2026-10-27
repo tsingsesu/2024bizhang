@@ -34,6 +34,13 @@
 ********************************************************************************************************************/
 
 #include "zf_common_headfile.h"
+extern void Cone_Scan(uint8 *data);
+extern void Stop_Probe(uint8 *data);        /* [2026-10-26] 终点探测（只记录）*/
+extern volatile uint16 stop_aaa;
+extern volatile uint16 stop_run;
+extern volatile uint8  stop_now, stop_latch;
+extern volatile uint16 tof_sample_mm;
+extern volatile uint8  tof_new_sample;
 #pragma section all "cpu1_dsram"
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU1的RAM中
 
@@ -68,6 +75,14 @@ void core1_main(void)
         if(dl1b_init_flag)
         {
             dl1b_get_distance();
+            /* ★只有这一轮真的测到新距离时才置位（finsh_flag 只成功时=1），
+               然后立刻清掉，防止被下一个 8192 空轮冲掉 */
+            if(dl1b_finsh_flag)
+            {
+                dl1b_finsh_flag = 0;
+                tof_sample_mm   = dl1b_distance_mm;
+                tof_new_sample  = 1;
+            }
         }
         if(mt9v03x_finish_flag)
         {
@@ -76,6 +91,8 @@ void core1_main(void)
             /* [2026-10-22] 标线扫描放在 Image_Handle 之后：
                横道/菱形是白色，先扫会被边缘识别当成"赛道变宽"去补线。 */
             Marker_Scan(*imagebinary);      // 2026 标线：人行横道 / 减速菱形
+            Cone_Scan(*imagebinary);        // [2026-10-24] 锥形标识别（只统计）
+            Stop_Probe(*imagebinary);       /* [2026-10-26] 终点探测：只统计，不动作 */
             Glare_Suppress(*imagebinary);   // [2026-10-20] reject reflection blobs
             Point_Control();      // 中点计算
             // ★原来清这个标志的是 LuUI_Show_page1() 里的那句 mt9v03x_finish_flag=0

@@ -68,17 +68,17 @@
 #define WIFI_SPI_READ_TRANSFER      (1)                         // 在调用wifi_spi_read_buffer 是否尝试发起SPI通讯来检测模块内是否有数据需要读取 1：发起SPI通讯 0：不发起SPI通讯，仅读取FIFO
                                                                 // 如果应用程序中没有任何的地方调用发送函数，则WIFI_SPI_READ_TRANSFER必须设置为1
                                                                 
-#define WIFI_SPI_AUTO_CONNECT       (2)   // [2026-10-22] 改 UDP：电脑上用 tools/car_log.py 收日志
+#define WIFI_SPI_AUTO_CONNECT       (2)   // [2026-10-26] 1->2：回到 UDP 模式给 car_log.py
                                           //   0=不自动连  1=TCP(逐飞助手图传)  2=UDP(终端日志)
 
 #if     (WIFI_SPI_AUTO_CONNECT > 2)    
 #error "WIFI_SPI_AUTO_CONNECT 的值只能为 [0,1,2]"
 #else   
 // ★热点账号（cpu0_main.c 里传入 wifi_spi_init）
-#define WIFI_SSID                   "minoshima"
-#define WIFI_PASS                   "uuuuvvvv"
+#define WIFI_SSID                   "11"
+#define WIFI_PASS                   "123321123"
 
-#define WIFI_SPI_TARGET_IP          "192.168.43.210"   // ★电脑在热点下的 IP              // 连接目标的 IP
+#define WIFI_SPI_TARGET_IP          "192.168.214.24"   // ★电脑在热点下的 IP              // 连接目标的 IP
 #define WIFI_SPI_TARGET_PORT        "8086"   // ★和逐飞助手 v1.2.7 一致                      // 连接目标的端口
 #define WIFI_SPI_LOCAL_PORT         "6666"                      // 本机的端口 0：随机  可设置范围2048-65535  默认 6666
 #endif

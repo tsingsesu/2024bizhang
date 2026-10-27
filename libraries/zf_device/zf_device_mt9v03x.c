@@ -89,9 +89,10 @@ uint8   imagen[ROW][COL];
    With the OLD broken Diedai() the effective threshold was ~89 because 0/0
    gave T0=255 and then x0.35.  Now Otsu works, so 35 would mean 0.35*Otsu
    (~35) and the whole floor turns white.  100 restores the old brightness. */
-uint8 zyuzhi = 63,Differ_light;    // [2026-10-22] 默认阈值系数 63（原 109）
+uint8 zyuzhi = 95,Differ_light;    // [2026-10-22] 默认阈值系数 63（原 109）
 uint8 diedai_threshold = 0;
-uint8 diedai_img_min = 0, diedai_img_max = 0, diedai_img_avg = 0;   // [2026-10-22] 整帧亮度诊断
+uint8 diedai_img_min = 0, diedai_img_max = 0, diedai_img_avg = 0;
+uint32 diedai_img_hi128 = 0, diedai_img_hi192 = 0;   // ★诊断：亮度>128 / >192 的像素数   // [2026-10-22] 整帧亮度诊断
 // 需要配置到摄像头的数据 不允许在这修改参数
 static int16 mt9v03x_set_confing_buffer[MT9V03X_CONFIG_FINISH][2]=
 {
@@ -722,6 +723,17 @@ uint8 Diedai(uint8 *image, uint16 col, uint16 row)//    碌眉麓煤路篓     //
         for (i = 0; i < 256; i ++) sum += (uint32)pixelCount[i] * (uint32)i;
         diedai_img_min = (uint8)min;
         diedai_img_max = (uint8)max;
+        {
+            uint32 i2;
+            uint32 n128 = 0, n192 = 0;
+            for(i2 = 0; i2 < ((uint32)col * row); i2 ++)
+            {
+                if(image[i2] > 128) n128 ++;
+                if(image[i2] > 192) n192 ++;
+            }
+            diedai_img_hi128 = n128;
+            diedai_img_hi192 = n192;
+        }
         diedai_img_avg = (uint8)(sum / (cnt32 ? cnt32 : 1));
     }
     T0 = (uint8)((min + max) / 2);

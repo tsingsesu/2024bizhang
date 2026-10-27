@@ -60,13 +60,14 @@ void System()
       原来的 P32_4/P20_10/P11_3/P11_2/P15_7/P23_1/P11_6/P20_7
       在 V3.1 上分别是 串口Tx / 按键S5 / 按键S4 / 串口Rx / 无线SPI-RST / 无线串口-RST / 按键S3，全部冲突*/
     gpio_init(P02_4,  GPO, GPIO_LOW, GPO_PUSH_PULL);//左前转向 -> P7 有刷电机2座
-    gpio_init(P02_5,  GPO, GPIO_LOW, GPO_PUSH_PULL);//左后转向 -> P7 有刷电机2座
-    gpio_init(P02_6,  GPO, GPIO_LOW, GPO_PUSH_PULL);//右前转向 -> P7 有刷电机2座
+    gpio_init(P02_5,  GPO, GPIO_LOW, GPO_PUSH_PULL);//右前转向  [2026-10-24 实测确认] -> P7 有刷电机2座
+    gpio_init(P02_6,  GPO, GPIO_LOW, GPO_PUSH_PULL);//左后转向  [2026-10-24 实测确认] -> P7 有刷电机2座
     gpio_init(P02_7,  GPO, GPIO_LOW, GPO_PUSH_PULL);//右后转向 -> P7 有刷电机2座
     gpio_init(P20_11, GPO, GPIO_LOW, GPO_PUSH_PULL);//左前大灯 -> P4 姿态传感器座
     gpio_init(P20_12, GPO, GPIO_LOW, GPO_PUSH_PULL);//右前大灯 -> P4 姿态传感器座
     gpio_init(P20_13, GPO, GPIO_LOW, GPO_PUSH_PULL);//左后刹灯 -> P4 姿态传感器座
     gpio_init(P20_14, GPO, GPIO_LOW, GPO_PUSH_PULL);//右后刹灯 -> P4 姿态传感器座
+gpio_init(P00_8, GPO, GPIO_LOW, GPO_PUSH_PULL);//右后刹灯 [2026-10-24] P00_8
 
     // ★★开机自检闪灯（诊断用）★★
     //   4 个转向灯闪 3 下 = 程序跑到了这里（说明 DL1B/摄像头初始化全部走完，马上要开 PIT）

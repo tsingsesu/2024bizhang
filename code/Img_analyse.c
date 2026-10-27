@@ -22,6 +22,10 @@ volatile uint8 start_trigger = 0;
 /* [2026-10-22] 非接触发车诊断：基线距离(mm, 0=空旷)、连续命中计数、是否已建立基线 */
 volatile uint16 start_base = 0, start_hold = 0;
 volatile uint8  start_ready = 0;
+/* [2026-10-24] ToF 新样本传递：CPU1 每测到一个新距离就置位一次，
+   CPU0 中断负责消费，保证每个测量样本只统计一次（不然 8192 会把样本冲掉） */
+volatile uint16 tof_sample_mm  = 0;
+volatile uint8  tof_new_sample = 0;
 
 /*************************图像赛道数据****************************/
 uint16 Left_Line[61], Right_Line[61], Mid_Line[61]; // 原始左右边界数据
@@ -105,6 +109,8 @@ uint8 agl_blob_pair     = 0;   // diag: rows that contained two glare-sized whit
 #define MK_DIA_MIN_ROWS         (6)     // 至少几行才判菱形
 #define MK_DIA_MAX_ROWS         (40)    // 超过这个行数不算菱形（防止整屏误判）
 #define MK_CW_STOPLINE_ROW      (52)    // 近车头 52 行以后出现单条白带 = 停车线
+#define MK_CW_SPAN_PCT          (60)   // [2026-10-26] 连续白带要占到本行车道宽的百分之多少才算人行横道；误杀就调小，误判就调大
+#define MK_CW_MIN_LANE_W        (30)   // [2026-10-26] 本行车道宽小于它就跳过这一行（边界不可信，判了也是错的）
 
 volatile uint8 mk_cw_seen = 0,  mk_cw_near  = 0, mk_cw_score  = 0;   // 人行横道
 volatile uint8 mk_dia_seen = 0, mk_dia_near = 0, mk_dia_score = 0;   // 减速菱形
@@ -128,54 +134,342 @@ void Marker_Scan(uint8 *data)
 
     for(i = MK_ROW_MIN; i <= MK_ROW_MAX; i ++)
     {
-        wc = 0; run_max = 0; pairs = 0; j0 = 0;
-        w = 0;
-        for(j = MK_BAND_L; j <= MK_BAND_R; j ++)
+        /* [2026-10-26] 原来固定扫 MK_BAND_L~MK_BAND_R（36~84）这 49 列，
+           不管车道在哪，也不管这一行到底有多宽。结果自制锥桶近看时
+           一条 20+px 的连续白带就满足 run_max>=22 和 wc>=22，
+           直接被人行横道判据吃下 -> mk_state=2 -> 停车 5 秒，车死在障碍前面。
+
+           改成【相对本行车道】来判断：
+             人行横道 = 一条白带横跨整条车道（>= MK_CW_SPAN_PCT% 车道宽，且盖住车道中心）
+             锥桶     = 一条窄白带，只占车道的一小段，盖不住中心
+           本行车道宽不可信（边界贴边/丢线）就跳过这一行，宁可不判也不误判。 */
+        uint16 lx = Left_Line[i];
+        uint16 rx = Right_Line[i];
+        uint8  c0, c1, lane_w;
+        uint8  run_s = 0, run_e = 0;
+        uint8  thin_l = 255, thin_r = 0;
+        uint8  has_c = 0;
+
+        wc = 0; run_max = 0; pairs = 0; j0 = 0; w = 0;
+
+        if(lx < 2 || rx > (COL - 3) || rx <= lx + MK_CW_MIN_LANE_W)
+            continue;                       /* 本行边界不可信 */
+
+        c0     = (uint8)(lx + 1);
+        c1     = (uint8)(rx - 1);
+        lane_w = (uint8)(c1 - c0 + 1);
+
+        for(j = c0; j <= c1; j ++)
         {
             if(data[i * COL + j])
             {
                 wc ++;
                 w ++;
                 if(w == 1) j0 = j;
-                if(w > run_max) run_max = w;
             }
-            else
+            else if(w)
             {
-                /* 一段白线结束：宽度达到 MK_THIN 的算一条"细白带" */
-                if(w >= MK_THIN_MIN && w <= MK_THIN_MAX) pairs ++;
+                if(w >= MK_THIN_MIN && w <= MK_THIN_MAX)
+                {
+                    pairs ++;
+                    if(j0 < thin_l)   thin_l = j0;
+                    if(j  > thin_r)   thin_r = (uint8)j;
+                }
+                if(w > run_max) { run_max = w; run_s = j0; run_e = (uint8)(j - 1); }
                 w = 0;
             }
         }
-        if(w >= MK_THIN_MIN && w <= MK_THIN_MAX) pairs ++;   // 结尾还有一段
+        if(w)                                   /* 行尾还有一段白 */
+        {
+            if(w >= MK_THIN_MIN && w <= MK_THIN_MAX)
+            {
+                pairs ++;
+                if(j0 < thin_l) thin_l = j0;
+                if(c1 > thin_r) thin_r = c1;
+            }
+            if(w > run_max) { run_max = w; run_s = j0; run_e = c1; }
+        }
 
-        /* [2026-10-22] 人行横道 = 一整条连续白带横跨车道（高 4cm、灰底）
-           中线是细白线、菱形是两条细斜线，都不会有长的连续白带。 */
-        if(run_max >= MK_CW_RUN_MIN && wc >= MK_CW_ROW_MIN)
+        /* 最长白带有没有盖住车道中心列 */
+        if(run_max)
+        {
+            uint8 cx = (uint8)((c0 + c1) / 2);
+            if(cx >= run_s && cx <= run_e) has_c = 1;
+        }
+
+        /* 人行横道：连续白带横跨本车道，且盖住车道中心 */
+        if(run_max >= (uint8)(((uint16)lane_w * MK_CW_SPAN_PCT) / 100) && has_c)
         {
             cw_rows ++;
             cw_near = i;
         }
-        /* [2026-10-22] 菱形 = 同一行里至少 2 条细白线，且中间被黑隔开。
-           单条细白线（车道中线）会被排除。 */
-        else if(pairs >= MK_DIA_MIN_PAIRS && wc <= MK_DIA_ROW_MAX)
+        /* 菱形：同一行至少两条细白线，且左右拉得够开（横跨半个车道以上）。
+           一排锥桶的细白段是挤在一起的，跨不了这么宽。 */
+        else if(pairs >= MK_DIA_MIN_PAIRS && wc <= MK_DIA_ROW_MAX &&
+                thin_r > thin_l && (uint16)(thin_r - thin_l) >= (uint16)(lane_w / 2))
         {
             dia_rows ++;
             dia_near = i;
         }
     }
 
+    
     mk_cw_score  = cw_rows;
     mk_dia_score = dia_rows;
-
-    /* 停车线只有 1~2 行：近车头出现单条白带时，也当作"到达横道"（停车线在横道前） */
-    if(cw_rows >= 1 && cw_rows < MK_CW_MIN_ROWS && cw_near > MK_CW_STOPLINE_ROW)
-    {
-        cw_rows = MK_CW_MIN_ROWS;
-    }
+    /* [2026-10-26] 这里原来有个「只看到 1~3 行就当成停车线、直接升格成横道」的捷径。
+       实测 O=3351 那次 cw_rows 只有 3 行（日志 CW=0/0/3）就被升格 ->
+       mk_state=2 -> 停 5 秒，车死在障碍前面。
+       横道本身有 MK_CW_MIN_ROWS 行以上，靠近时 cw_near 也一定会涨过 MK_STOP_ROW，
+       不需要这个捷径。 */
     mk_cw_seen   = (cw_rows >= MK_CW_MIN_ROWS);
     mk_dia_seen  = (dia_rows >= MK_DIA_MIN_ROWS && dia_rows <= MK_DIA_MAX_ROWS);
     mk_cw_near   = mk_cw_seen  ? cw_near  : 0;
     mk_dia_near  = mk_dia_seen ? dia_near : 0;
+}
+
+/* ================= [2026-10-26] 终点线探测（只记录，不动作）=============
+   和停用的 Find_Stop() 用同一个窗口（第 30~65 行、第 10~60 列数白点），
+   但这里每帧都算，而且【只置标志、不改车速】。
+   目的：先跑一整圈看 stop_latch 会不会在终点以外的地方变 1，
+   确认判据靠得住，再把真正的停车接上去。
+   stop_latch 一旦置 1 就不再复位的 —— 这正是要观察的东西：
+   如果它在中途就变 1，说明真开着的话车会在半路停死。 */
+volatile uint16 stop_aaa   = 0;   /* 窗口里的白点数（越大越不像终点）*/
+volatile uint16 stop_run   = 0;   /* 连续多少帧 A<2（中途最长只有 3 帧，终点处应该会很长）*/
+volatile uint8  stop_now   = 0;   /* 本帧 aaa<2 */
+volatile uint8  stop_latch = 0;   /* 本遍里是否出现过 aaa<2（不复位）*/
+
+void Stop_Probe(uint8 *data)
+{
+    uint16 i, j, n = 0;
+
+    for(i = 30; i <= 65 && i < ROW; i ++)
+        for(j = 10; j <= 60 && j < COL; j ++)
+            if(data[i * COL + j]) n ++;
+
+    stop_aaa = n;
+    stop_now = (n < 2);
+    if(stop_now) { if(stop_run < 60000) stop_run ++; }
+    else           stop_run = 0;
+    if(stop_now) stop_latch = 1;
+}
+
+/* ================= [2026-10-24] 锥形标识别 v3 =================
+   锥桶是红色，灰度 ≈76 > 二值阈值 → 二值图里是【实心白块】，和车道线一样白，
+   所以只能靠【横向宽度】区分：
+       车道线 = 2cm ≈ 2~3px（细）
+       锥桶   = 6~9cm，远处 5px、贴着车会到 30~40px（粗）
+
+   v3 修了两个 bug：
+     1) v2 的计数是"上一行没有宽白段才算新锥桶"，但每行都有几十个宽白段，
+        于是 CN 永远卡在 1~2。改成真正的二维 blob 跟踪：同列、相邻行才合并。
+     2) 只在【车道内部】扫（左右边界之间），避免抓赛道外的白色区域
+        （v2 的 cone_x 一直卡在 108，而右边界才 100）。
+
+   cone_wh[] 宽度直方图：[0]<=4  [1]5~10  [2]11~18  [3]19~30  [4]>30
+   CONE_ACT_ENABLE = 0：只统计 + 画点，不动舵机。 */
+#define CONE_ROW_MIN     (14)
+#define CONE_ROW_MAX     (56)
+#define CONE_COL_MIN     (6)
+#define CONE_COL_MAX     (111)
+#define CONE_W_MIN       (5)
+#define CONE_W_MAX       (40)
+#define CONE_LINK_X      (10)    /* 相邻行横向偏差 <=10px 算同一个锥桶 */
+#define CONE_NEAR_ROW    (36)    /* 这一行以后算"近端"锥桶，绕行方向用它决定 */
+#define CONE_MIN_ROWS    (1)     /* blob 至少占 1 行：锥桶白箍只有 1cm 高，二值化后就是 1 行，要求 2 行等于全扔 */
+#define CONE_MAX_BLOBS   (12)
+#define CONE_MAX_PTS     (48)
+
+volatile uint8  cone_cnt  = 0;
+volatile uint8  cone_near = 0;
+volatile int16  cone_x    = -1;
+volatile uint8  cone_ok   = 0;
+volatile uint16 cone_wh[5] = {0, 0, 0, 0, 0};
+
+uint8 cone_px[CONE_MAX_PTS];
+uint8 cone_py[CONE_MAX_PTS];
+volatile uint8 cone_pts = 0;
+
+void Cone_Scan(uint8 *data)
+{
+    uint8 cbx[CONE_MAX_BLOBS];      /* blob 最近一行的中心 x */
+    uint8 cbr[CONE_MAX_BLOBS];      /* blob 最近命中的行 */
+    uint8 cbn[CONE_MAX_BLOBS];      /* blob 累计命中行数   */
+    uint8 nb = 0, i, j, w, cx, b;
+    uint8 n = 0, best_row = 0;
+    int16 best_x = -1;
+
+    cone_cnt = 0; cone_near = 0; cone_x = -1; cone_pts = 0;
+    cone_wh[0] = cone_wh[1] = cone_wh[2] = cone_wh[3] = cone_wh[4] = 0;
+
+    /* [2026-10-24] 这里原来抄了 Marker_Scan 的 "iavg<10 就放弃"，
+       但这车正常画面 iavg 就是 4 左右（大面积黑赛道），
+       结果 79% 的帧被误杀，锥桶识别率只有 13%。去掉了。
+       过曝保护保留：整片白的时候白段会连成一大坨，判不准。 */
+    if(diedai_img_avg > 190)
+    {
+        cone_ok = 0;
+        return;
+    }
+
+    for(i = CONE_ROW_MIN; i <= CONE_ROW_MAX; i ++)
+    {
+        /* 只在车道内部扫，避免把赛道外的白色地板当成锥桶。
+           但边界本身可能是假的：实测出现过 R=31（车道只剩 23px），
+           这时如果照着裁，扫描窗口被压成一条缝，CWD 会全是 0。
+           所以只在边界"看起来像真的"时才裁：
+             左边界必须落在画面左半边，右边界必须落在右半边，且宽度 > 25px。 */
+        uint8 c0 = CONE_COL_MIN;
+        uint8 c1 = CONE_COL_MAX;
+
+        if(Left_Line[i] > 2 && Left_Line[i] < (COL / 2))
+            c0 = (uint8)(Left_Line[i] + 2);
+        if(Right_Line[i] < COL - 3 && Right_Line[i] > (COL / 2))
+            c1 = (uint8)(Right_Line[i] - 2);
+
+        if(c0 < CONE_COL_MIN) c0 = CONE_COL_MIN;
+        if(c1 > CONE_COL_MAX) c1 = CONE_COL_MAX;
+        /* [2026-10-26] 门槛 25 -> 50。
+           刚发车时车道读数还不稳（实测 T=41 那帧 L=29 R=71 W=42，真实是 76），
+           窗口被裁成 [31,69]，而锥桶在 cone_x=87 —— 在窗口外，根本扫不到。
+           这就是「第一次障碍识别比后面差、有时会撞」的原因：
+           触发前 40 帧里 CN>=2 只有 5 帧，后面几次都是 10~16 帧。
+           真实车道宽约 76，裁完还有 72，不会被这个门槛误退。 */
+        if(c1 < c0 + 50)                /* 窗口太窄说明边界不可信 → 退回全宽 */
+        {
+            c0 = CONE_COL_MIN;
+            c1 = CONE_COL_MAX;
+        }
+
+        j = c0;
+        while(j < c1)
+        {
+            if(data[i * COL + j])
+            {
+                uint8 x0 = j;
+                w = 0;
+                while(j < c1 && data[i * COL + j])
+                {
+                    j ++;
+                    w ++;
+                }
+
+                if(w <= 4)          cone_wh[0] ++;
+                else if(w <= 10)    cone_wh[1] ++;
+                else if(w <= 18)    cone_wh[2] ++;
+                else if(w <= 30)    cone_wh[3] ++;
+                else                cone_wh[4] ++;
+
+                if(w >= CONE_W_MIN && w <= CONE_W_MAX)
+                {
+                    cx = (uint8)(x0 + w / 2);
+
+                    /* 找上一行、横向附近的 blob 合并 */
+                    for(b = 0; b < nb; b ++)
+                    {
+                        int16 dx = (int16)cx - (int16)cbx[b];
+                        if(dx < 0) dx = -dx;
+                        if(cbr[b] + 1 == i && dx <= CONE_LINK_X) break;
+                    }
+
+                    if(b < nb)
+                    {
+                        cbx[b] = cx;
+                        cbr[b] = i;
+                        if(cbn[b] < 200) cbn[b] ++;
+                    }
+                    else if(nb < CONE_MAX_BLOBS)
+                    {
+                        cbx[nb] = cx;
+                        cbr[nb] = i;
+                        cbn[nb] = 1;
+                        nb ++;
+                    }
+
+                    /* 不再逐点记录：逐点会有几百个，SPI 画不过来。
+                       只在最后把"有效 blob"的中心存下来（最多 12 个）。 */
+                }
+            }
+            else
+            {
+                j ++;
+            }
+        }
+    }
+
+    /* 够高的 blob 才算锥桶。
+       [2026-10-24] cone_x 原来取"最靠下那个 blob"的 x，但白箍是碎片化的(1 行一个)，
+       "最近的那个"每帧都在跳：实测相邻帧 61 -> 102 -> 79 -> 37。
+       绕行的方向判断完全靠它，于是一会儿左满舵一会儿右满舵。
+       改成【所有有效 blob 的平均 x】= 整组锥桶的中心，稳定得多。 */
+    {
+        int32 sum_all = 0, sum_near = 0;
+        uint8 cnt_all = 0, cnt_near = 0;
+
+        for(b = 0; b < nb; b ++)
+        {
+            if(cbn[b] >= CONE_MIN_ROWS)
+            {
+                n ++;
+                sum_all += (int32)cbx[b];
+                cnt_all ++;
+
+                /* 靠下（离车近）的那一段单独统计 */
+                if(cbr[b] >= CONE_NEAR_ROW)
+                {
+                    sum_near += (int32)cbx[b];
+                    cnt_near ++;
+                }
+
+                if(cbr[b] >= best_row) best_row = cbr[b];
+
+                if(cone_pts < CONE_MAX_PTS)
+                {
+                    cone_px[cone_pts] = cbx[b];
+                    cone_py[cone_pts] = cbr[b];
+                    cone_pts ++;
+                }
+            }
+        }
+
+        /* [2026-10-24] 优先用"近端"的锥桶位置。
+           锥桶是一组斜跨两条道的斜线，车要跟着斜线走，
+           所以方向应该由【马上要经过的那几个】决定，而不是整组的平均值。
+           近端找不到再退回整组平均。 */
+        /* [2026-10-26] 锥桶是【分两排】摆的：一排在某条车道靠前、另一排靠后。
+           原来把"所有近端 blob"取平均，两排同时在视野里就被平均成中间值，
+           方向判据拿到的是一个谁都不像的 x —— 实测相邻帧在左右之间翻转 57 次。
+           现在只取【离车最近的那一排】（最靠下的那几行）的平均。 */
+        if(nb)
+        {
+            int32 sum_deep = 0;
+            uint8 cnt_deep = 0;
+
+            for(b = 0; b < nb; b ++)
+            {
+                if(cbn[b] >= CONE_MIN_ROWS && (cbr[b] + 4) >= best_row)
+                {
+                    sum_deep += (int32)cbx[b];
+                    cnt_deep ++;
+                }
+            }
+
+            if(cnt_deep >= 2)
+            {
+                best_x = (int16)(sum_deep / (int32)cnt_deep);
+                cone_near = best_row;
+            }
+            else if(cnt_near) best_x = (int16)(sum_near / (int32)cnt_near);
+            else if(cnt_all)  best_x = (int16)(sum_all  / (int32)cnt_all);
+        }
+    }
+
+    cone_cnt  = n;
+    cone_near = best_row;
+    cone_x    = best_x;
+    /* [2026-10-24] 门槛 3 -> 2：实测有锥桶的帧 CN 只有 1~2（共 7 个锥桶），
+       卡在 3 就一次都不触发。 */
+    cone_ok   = (n >= 2);
 }
 
 static uint8 agl_run_limit(uint8 i)

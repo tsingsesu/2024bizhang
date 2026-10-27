@@ -24,9 +24,16 @@ void LuUI_Log_Poll(void);
 #define FLASH_PAGE_BAK            (10)   // [2026-10-22] 调参备份页，见 Parameter_Save
                                           // [2026-10-22] 驱动只支持 0~11 页（EEPROM_PAGE_NUM=12），原来写 17 会触发 zf_assert
 #define PARAM_TUNING              (1)    // [2026-10-22] 1=上电不读 flash，用代码默认值；定稿后改 0
+/* [2026-10-26] 0 = 调参阶段连舵机中位也用代码里的 Steer_Mid，不从 flash 取。
+   原来 PARAM_TUNING=1 时还在从 flash 备份页恢复 Steer_Mid，
+   flash 里如果留着早期标定的 857，开机就被打成接近右打死（857 vs 917 差 60）。
+   定稿、把中位存进 flash 之后再改回 1。 */
+#define FLASH_RESTORE_STEER_MID   (0)
 /* [2026-10-22] 标线动作开关，日志里用 MK%s 显示；
    0 = 只记录（首次实测用）  1 = 真正减速/停车 */
-#define MK_ACT_ENABLE             (0)
+#define MK_ACT_ENABLE             (1)    /* [2026-10-26] 锥桶被误判成横道导致停车，已改 Marker_Scan 判据（白带须横跨 >=60% 车道宽且盖住车道中心）。若跑起来又在障碍处停车，先把这里改回 0。 */
+/* [2026-10-24] 锥形标绕行：1=检测到锥桶就转向避让  0=只识别不动舵机 */
+#define CONE_ACT_ENABLE           (1)
 extern int8 RMotorSpeed1;
 extern int16 canshu_test[8];
 extern int8 FLAG1111;
