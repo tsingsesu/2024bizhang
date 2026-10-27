@@ -31,6 +31,7 @@ def function(source, name):
 CONTROL = read_source("code/control.c")
 PID_SOURCE = read_source("code/PID.c")
 UI_HEADER = read_source("code/Lu_UI.h")
+IMAGE_SOURCE = read_source("code/Img_analyse.c")
 
 PRELUDE = r"""
 #include <stdint.h>
@@ -48,6 +49,9 @@ uint8 steer_mode,cone_ok,cone_cnt,cone_near,mk_state,mk_dia_seen,mk_cw_seen,mk_c
 uint8 Distance_ON,Distance_Test_ON,end_stopped,Line_Point;
 uint16 Left_Line[61],Right_Line[61],Width_Real[61],Mid_Line[61],Pwm_Min=847,Pwm_Max=987,end_stop_cm,steer_guard_bits;
 uint8 Fictitious_Midline[61]; int8 Line_Count=4; uint8 Result_Far_Row=59;
+uint8 cone_px[48],cone_py[48],cone_pts,diedai_img_avg=80,image[70*120];
+uint16 cone_wh[5];
+uint8 cone_group_ok,cone_group_support,cone_group_span_x,cone_group_span_y,cone_group_error;
 int16 cone_x=-1,lane_k=75,Steer_Mid=917,Steer_Trim=16,slalom_dir=-1;
 uint8 cone_group_cnt; char Point_Error;
 int32 SD5_Duty,steer_target,steer_raw_target,LMotorSpeed,RMotorSpeed,LSpeedPWM,RSpeedPWM,iError;
@@ -87,19 +91,23 @@ CONSTANTS = [
     "MOTOR_PWM_MAX", "MOTOR_RAMP_TICKS", "MOTOR_TEST_TARGET_SPEED", "SPEED_PERCENT",
     "MK_DIA_SPEED_PCT", "MK_GAP_CM", "MK_DIA_CONFIRM", "MK_CW_CONFIRM",
     "MK_STOP_ROW", "MK_STOP_TICKS", "MK_PARK_DUTY", "CONE_ACT_ENABLE",
+    "CONE_ROW_MIN", "CONE_ROW_MAX", "CONE_COL_MIN", "CONE_COL_MAX",
+    "CONE_W_MIN", "CONE_W_MAX", "CONE_LINK_X", "CONE_NEAR_ROW",
+    "CONE_MIN_ROWS", "CONE_MAX_BLOBS", "CONE_MAX_PTS",
 ]
 
 
 def macro(name):
-    match = re.search(r"^#define\s+" + name + r"\s+(\([^\n]*?\)|\d+)", CONTROL + "\n" + UI_HEADER, re.M)
+    match = re.search(r"^#define\s+" + name + r"\s+(\([^\n]*?\)|\d+)", CONTROL + "\n" + UI_HEADER + "\n" + IMAGE_SOURCE, re.M)
     assert match, name
-    return "#define " + name + " " + match.group(1) + "\n"
+    return "#ifndef " + name + "\n#define " + name + " " + match.group(1) + "\n#endif\n"
 
 
 TESTS = r"""
 static void check(int ok,const char *why){if(!ok){fprintf(stderr,"FAIL: %s (mode=%d raw=%d target=%d duty=%d MK=%d ES=%d)\n",why,steer_mode,steer_raw_target,steer_target,SD5_Duty,mk_state,end_stopped);exit(1);}}
 static void lane(int l,int r){for(int i=0;i<61;i++){Left_Line[i]=l;Right_Line[i]=r;Width_Real[i]=r-l;Mid_Line[i]=(l+r)/2;} Point=60;Result_Far_Row=59;}
 static void start(void){Stop_1=0;S3010_Control();Stop_1=1;for(int i=0;i<STEER_START_TICKS;i++){S3010_Control();check(steer_mode==1 && servo_pwm==933 && steer_target==60,"startup is centered for every tick");}}
+static void band(int x,int y){for(int i=0;i<8;i++)image[y*COL+x+i]=255;}
 int main(int argc,char **argv){check(argc==2,"scenario required");
  if(!strcmp(argv[1],"straight")){
   lane(48,117);Point=81;start();
@@ -113,7 +121,15 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   lane(20,100);cone_ok=1;cone_cnt=2;cone_near=50;cone_x=80;start();
   vision_processed_frames=1;for(int i=0;i<100;i++){S3010_Control();check(steer_mode!=3,"one cone frame cannot trigger a maneuver");}
   vision_processed_frames=2;S3010_Control();check(steer_mode!=3,"two frames do not confirm a cone");
-  vision_processed_frames=3;S3010_Control();check(steer_mode==3 && steer_target==42,"confirmed cone remains able to maneuver");
+  vision_processed_frames=3;S3010_Control();
+#if CONE_ACT_ENABLE
+  check(steer_mode==3 && steer_target==42,"confirmed cone remains able to maneuver when enabled");
+#else
+  for(int i=0;i<1000;i++){
+   vision_processed_frames++;S3010_Control();
+   check(steer_mode!=3 && lane_k==75 && steer_target>=50 && steer_target<=70,"disabled cone action cannot steer or change lanes even with persistent false detections");
+  }
+#endif
  }
  else if(!strcmp(argv[1],"crosswalk")){
   lane(38,82);start();for(int i=0;i<1200;i++)Control_Speed();check(LMotorSpeed>0,"normal drive remains available");
@@ -132,6 +148,16 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   for(int i=0;i<MK_STOP_TICKS;i++)Control_Speed();
   check(mk_state!=2 && LMotorSpeed>0,"5 second restart is retained when override disabled");
 #endif
+ }
+ else if(!strcmp(argv[1],"perception")){
+  lane(1,117);start();band(70,54);band(74,56);
+  for(int i=0;i<100;i++){
+   Cone_Scan(image);vision_processed_frames++;S3010_Control();
+   check(cone_cnt==2 && !cone_ok && steer_mode!=3 && lane_k==75,"repeated raw two-blob false detections never enter a maneuver");
+  }
+  memset(image,0,sizeof(image));band(26,25);band(51,40);band(76,55);
+  for(int i=0;i<CONE_CONFIRM_FRAMES;i++){Cone_Scan(image);vision_processed_frames++;S3010_Control();}
+  check(cone_ok && steer_mode==3 && lane_k==0,"validated diagonal group can still trigger automatic avoidance");
  }
  else if(!strcmp(argv[1],"fit")){
   float a,b;lane(38,82);
@@ -155,13 +181,14 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   }fclose(f);printf("Replay frames: %d\n",n);
  }
  else check(0,"unknown scenario");
- printf("PASS %s (final=%d actions=%d)\n",argv[1],MK_FINAL_STOP,MK_ACT_ENABLE);return 0;}
+ printf("PASS %s (final=%d actions=%d cone=%d)\n",argv[1],MK_FINAL_STOP,MK_ACT_ENABLE,CONE_ACT_ENABLE);return 0;}
 """
 
 
 def main():
     definitions = "".join(macro(name) for name in CONSTANTS)
-    functions = "".join(function(PID_SOURCE, n) for n in ["PlacePID_Control", "RMotorPid_Col", "LMotorPid_Col"])
+    functions = '#include "Mai_cone_geometry.h"\n' + function(IMAGE_SOURCE, "Cone_Scan")
+    functions += "".join(function(PID_SOURCE, n) for n in ["PlacePID_Control", "RMotorPid_Col", "LMotorPid_Col"])
     functions += "".join(function(CONTROL, n) for n in ["S3010_Control", "Motor_Control", "Point_Control", "Control_Speed", "Least_Sqaure_Method", "Fictitious_Beeline"])
     with tempfile.TemporaryDirectory(prefix="Mai_control_regression_") as directory:
         work = Path(directory)
@@ -171,18 +198,24 @@ def main():
         replay = []
         if log.is_file():
             for line in log.read_text(errors="replace").splitlines():
-                v = dict(re.findall(r"(\w+)=([^\s]+)", line))
+                # V23/V24 reused R for stop_run later in the same line.
+                # Keep the first R, which is the actual right lane boundary.
+                v = {}
+                for key, value in re.findall(r"(\w+)=([^\s]+)", line):
+                    v.setdefault(key, value)
                 if "T" not in v or not v.get("st", "").startswith("0/"):
                     continue
                 cn, near, cx = v["CN"].split("/")
                 replay.append(" ".join([v[k] for k in ["L", "R", "W", "P", "FR", "LC"]] + [cn, near, cx]))
         (work / "Mai_trace.txt").write_text("\n".join(replay))
-        for final, actions in [(1, 1), (0, 1), (1, 0)]:
-            executable = work / f"Mai_control_{final}_{actions}"
-            subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror=format", "-Werror=implicit-function-declaration", f"-DMK_FINAL_STOP={final}", f"-DMK_ACT_ENABLE={actions}", str(source), "-lm", "-o", str(executable)], check=True)
+        for final, actions, cone in [(1, 1, 1), (1, 1, 0), (0, 1, 1), (1, 0, 1)]:
+            executable = work / f"Mai_control_{final}_{actions}_{cone}"
+            subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror=format", "-Werror=implicit-function-declaration", "-I", str(ROOT / "code"), f"-DMK_FINAL_STOP={final}", f"-DMK_ACT_ENABLE={actions}", f"-DCONE_ACT_ENABLE={cone}", str(source), "-lm", "-o", str(executable)], check=True)
             cases = ["crosswalk"]
             if final and actions:
                 cases += ["straight", "cone", "fit", "distance"]
+                if cone:
+                    cases.append("perception")
                 if replay:
                     cases.append("replay")
                 else:

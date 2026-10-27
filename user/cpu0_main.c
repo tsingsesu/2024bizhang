@@ -39,7 +39,7 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (24)   // V24: straight-following and final-stop diagnostics
+#define CAR_LOG_VERSION           (25)   // V25: validate cone-group geometry; keep recognition and action enabled
 /* [2026-10-22] 发车方式
    0 = 不自动发车，只能人工放行（调试用；板上只有 S2~S5，没有 S1）
    1 = ToF 遮挡发车（当前，比赛要求非接触发车） */
@@ -76,6 +76,7 @@ extern volatile uint16 stop_run;
 extern volatile uint8  stop_now, stop_latch;
 extern volatile uint8 cone_cnt, cone_near, cone_ok;
 extern volatile int16 cone_x;
+extern volatile uint8 cone_group_ok, cone_group_support, cone_group_span_x, cone_group_span_y, cone_group_error;
 extern volatile uint16 cone_wh[5];
 extern uint8 wifi_init_step;
 static uint8 cam_send_cnt = 0;   // ★图传降频计数
@@ -160,7 +161,7 @@ int core0_main(void)
             /* [2026-10-22] 调参日志：FR = 本帧最远可信行；L/R/W = 第 22 行左右边线与宽度；
                T0 = Diedai 实际二值阈值；zy = 阈值系数+偏置；dl = Differ_light；
                Rm = Rhombus_Flag；To = DL1B 距离 */
-            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d GB=0x%04X TP=%ld FC=%lu H128=%lu H192=%lu CN=%d/%d/%d CWD=%d/%d/%d/%d/%d SO=%d A=%d R=%d SM=%d RT=%ld LK=%d MS=%lu PC=%lu VS=%ld/%ld VE=%d/%d VP=%ld/%ld ES=%d FS=%d\r\n",
+            sprintf(log_buf, "V%d T=%lu P=%d LC=%d FR=%d L=%d R=%d W=%d d=%ld st=%d/%d Rm=%d T0=%d zy=%d dl=%d To=%d exp=%d g=%d imin=%d imax=%d iavg=%d se=%d sg=%d DI=%d/%d/%d CW=%d/%d/%d MK=%d MKs=%d SB=%d/%d/%d O=%d GB=0x%04X TP=%ld FC=%lu H128=%lu H192=%lu CN=%d/%d/%d CWD=%d/%d/%d/%d/%d SO=%d A=%d SR=%d SM=%d RT=%ld LK=%d MS=%lu PC=%lu VS=%ld/%ld VE=%d/%d VP=%ld/%ld ES=%d FS=%d CA=%d CG=%d GP=%d/%d/%d/%d\r\n",
                 (int)CAR_LOG_VERSION,
                 (unsigned long)car_log_tick, (int)Point, (int)Line_Count, (int)Result_Far_Row,
                 (int)Left_Line[22], (int)Right_Line[22], (int)Width_Real[22],
@@ -182,7 +183,9 @@ int core0_main(void)
                  (long)LMotorSpeed, (long)RMotorSpeed,
                  (int)Lrealspeed, (int)Rrealspeed,
                  (long)LSpeedPWM, (long)RSpeedPWM,
-                 (int)end_stopped, (int)MK_FINAL_STOP);
+                 (int)end_stopped, (int)MK_FINAL_STOP, (int)CONE_ACT_ENABLE,
+                 (int)cone_group_ok, (int)cone_group_support,
+                 (int)cone_group_span_x, (int)cone_group_span_y, (int)cone_group_error);
             wifi_spi_send_string(log_buf);
         }
 #endif

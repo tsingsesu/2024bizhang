@@ -1,4 +1,5 @@
 #include "zf_common_headfile.h"
+#include "Mai_cone_geometry.h"
 
 /*
 *   结果变量 用于在屏幕显示
@@ -284,6 +285,8 @@ volatile uint8  cone_cnt  = 0;
 volatile uint8  cone_near = 0;
 volatile int16  cone_x    = -1;
 volatile uint8  cone_ok   = 0;
+volatile uint8 cone_group_ok = 0;
+volatile uint8 cone_group_support = 0, cone_group_span_x = 0, cone_group_span_y = 0, cone_group_error = 0;
 volatile uint16 cone_wh[5] = {0, 0, 0, 0, 0};
 
 uint8 cone_px[CONE_MAX_PTS];
@@ -298,8 +301,11 @@ void Cone_Scan(uint8 *data)
     uint8 nb = 0, i, j, w, cx, b;
     uint8 n = 0, best_row = 0;
     int16 best_x = -1;
+    Mai_Cone_Group group;
 
     cone_cnt = 0; cone_near = 0; cone_x = -1; cone_pts = 0;
+    cone_ok = cone_group_ok = 0;
+    cone_group_support = cone_group_span_x = cone_group_span_y = cone_group_error = 0;
     cone_wh[0] = cone_wh[1] = cone_wh[2] = cone_wh[3] = cone_wh[4] = 0;
 
     /* [2026-10-24] 这里原来抄了 Marker_Scan 的 "iavg<10 就放弃"，
@@ -467,9 +473,14 @@ void Cone_Scan(uint8 *data)
     cone_cnt  = n;
     cone_near = best_row;
     cone_x    = best_x;
-    /* [2026-10-24] 门槛 3 -> 2：实测有锥桶的帧 CN 只有 1~2（共 7 个锥桶），
-       卡在 3 就一次都不触发。 */
-    cone_ok   = (n >= 2);
+    /* V25: two white fragments are insufficient evidence of a cone group.
+       Preserve raw CN/points, but only confirm a distributed diagonal group. */
+    cone_group_ok = Mai_Cone_Group_Valid(cone_px, cone_py, cone_pts, &group);
+    cone_group_support = group.support;
+    cone_group_span_x = group.span_x;
+    cone_group_span_y = group.span_y;
+    cone_group_error = group.error;
+    cone_ok = cone_group_ok;
 }
 
 static uint8 agl_run_limit(uint8 i)
