@@ -1,6 +1,8 @@
 Debug/
 .ads/
-.settings/
+.settings/*
+!.settings/com.infineon.aurix.buildsystem.prefs
+!.settings/org.eclipse.core.resources.prefs
 *.launch
 *.bak_*
 *.disabled
