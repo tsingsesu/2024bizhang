@@ -869,6 +869,7 @@ uint8 wifi_spi_init (char *wifi_ssid, char *pass_word)
     #endif
         
     #if(2 == WIFI_SPI_AUTO_CONNECT)
+        wifi_init_step = 4;   // UDP setup; step 2 is reserved for WiFi association
         return_state = wifi_spi_socket_connect("UDP", WIFI_SPI_TARGET_IP, WIFI_SPI_TARGET_PORT, WIFI_SPI_LOCAL_PORT);
         if(return_state)
         {
