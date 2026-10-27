@@ -116,6 +116,7 @@ int32    SD5_Duty =  SteerMiddle;
                                       原来固定 1.0 秒：实测车速约 140cm/秒，全速时正好走 140cm；
                                       遇菱形减速到 50% 后 1 秒只走 70cm，横移量砍半 -> 撞锥桶。
                                       现在按里程，速度怎么变横移量都一样。调大=转得更狠，140~180 之间试。 */
+#define CONE_RETURN_TAPER_FROM (80) /* Legacy O units: soften only the second return maneuver. */
 #define CONE_HOLD_MAXTICKS  (800)  /* 兜底 4 秒：打滑/编码器不动时强制退出，别一直满舵 */
 #define CONE_CLEAR_TICKS    (200)  /* 5ms × 200 = 1 秒看不见锥桶，才算这一组过完 */
 #define CONE_COOL_TICKS     (300)  /* 5ms × 300 = 1.5 秒冷却；第二组锥桶间隔 2~4 米，够触发 */
@@ -146,7 +147,7 @@ uint8  end_stopped = 0;          /* 已经停了（发车前清零）*/
    车从右道出发。所以第一次绕行往【左】，之后左右交替。
    每次发车前复位成 -1（左）。 */
 static int8 slalom_dir = -1;
-static uint8 cone_group_cnt = 0;   /* 已经绕过的组数 */
+uint8 cone_group_cnt = 0;   /* 已经绕过的组数 */
 
 int16    Steer_Mid = 917;   /* [2026-10-22] 实测中位(原代码 857 偏右约 5°) */
 
@@ -179,6 +180,8 @@ extern volatile uint16 tof_sample_mm;
 extern volatile uint32 tof_sample_tick;
 extern volatile uint8 tof_has_sample;
 uint8    steer_mode = 0;      /* 0 waiting, 1 settling, 2 lane, 3 cone, 4 invalid, 5 parked */
+int32 steer_normal_target = -1;
+uint8 cone_turn_percent = 0;
 int32    steer_raw_target = -1;
 int32    steer_target = -1;    // 本次计算出的目标点（诊断用）   // ★诊断：保护条件位掩码，0=PID正在跑
 uint8    showpoint[2] = {0};
@@ -265,6 +268,8 @@ void S3010_Control(void)
         }
     }
     steer_look_row = look_row;
+    cone_turn_percent = 0;
+    steer_normal_target = -1;
     if(vision_processed_frames != last_vision_frame)
     {
         last_vision_frame = vision_processed_frames;
@@ -420,6 +425,7 @@ void S3010_Control(void)
                 }
             }
 
+            steer_normal_target = pt;
 #if CONE_ACT_ENABLE
             if(mk_state < 2)
             /* ★锥形标绕行 —— 锁存式（2026-10-24）
@@ -501,7 +507,18 @@ void S3010_Control(void)
 
                     if(latched)
                     {
-                        int32 t = (int32)Point_Mid + (int32)dir * CONE_LANE_HALF;
+                        int32 half = CONE_LANE_HALF;
+                        int32 margin, t;
+                        double used = Run_Odo - od_start;
+                        /* The second group is the return to the home lane. Do not
+                           keep full lateral demand after the lane change is underway. */
+                        if(cone_group_cnt == 2 && used > CONE_RETURN_TAPER_FROM)
+                            half = (int32)(CONE_LANE_HALF * (CONE_LANE_CM - used) /
+                                           (CONE_LANE_CM - CONE_RETURN_TAPER_FROM));
+                        if(half < 0) half = 0;
+                        margin = half < 6 ? half : 6;
+                        cone_turn_percent = (uint8)(half * 100 / CONE_LANE_HALF);
+                        t = (int32)Point_Mid + (int32)dir * half;
 
                         /* [2026-10-26] 目标点不许越过第 22 行的边线（再留 4px），
                            否则舵机会把车直接顶着墙走。
@@ -514,11 +531,16 @@ void S3010_Control(void)
                         {
                             if(t > (int32)Right_Line[22] - 4) t = (int32)Right_Line[22] - 4;
                         }
-                        if(dir < 0 && t > (int32)Point_Mid - 6) t = (int32)Point_Mid - 6;
-                        if(dir > 0 && t < (int32)Point_Mid + 6) t = (int32)Point_Mid + 6;
+                        if(dir < 0 && t > (int32)Point_Mid - margin) t = (int32)Point_Mid - margin;
+                        if(dir > 0 && t < (int32)Point_Mid + margin) t = (int32)Point_Mid + margin;
 
                         pt = t;
                         cone_steering = 1;
+                    }
+                    else
+                    {
+                        lane_target = Point_Mid;
+                        Point_PID.LastError = 0;
                     }
                 }
             }

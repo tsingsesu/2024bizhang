@@ -55,12 +55,13 @@ uint16 cone_wh[5];
 uint8 cone_group_ok,cone_group_support,cone_group_span_x,cone_group_span_y,cone_group_error;
 int16 cone_x=-1,lane_k=75,Steer_Mid=917,Steer_Trim=16,slalom_dir=-1;
 uint8 cone_group_cnt; char Point_Error;
+int32 steer_normal_target;uint8 cone_turn_percent;
 int32 SD5_Duty,steer_target,steer_raw_target,LMotorSpeed,RMotorSpeed,LSpeedPWM,RSpeedPWM,iError;
 int16 Rcount,Lcount,Rrealspeed,Lrealspeed,Fictitious_Beeline_Num;
 double Distance,Distance_Test,Run_Odo; float Mid_Ka,Mid_Kb;
 volatile uint32 isr_tick_5ms,vision_processed_frames,tof_sample_tick;
 uint16 vision_age_ticks,track_bad_ticks,mk_stop_elapsed_ms,mk_clear_remaining_mm,steer_lane_left,steer_lane_right;
-uint8 steer_look_row,mk_cw_score,mk_dia_score,mk_dia_near;
+uint8 steer_look_row,mk_cw_bands,mk_cw_score,mk_dia_score,mk_dia_near;
 uint8 drive_inhibit,drive_inhibit_reason,mk_finish_reason,mk_near_white,tof_has_sample;
 uint16 tof_sample_mm;double run_distance_cm;
 #define MT9V03X_W 120
@@ -91,11 +92,11 @@ CONSTANTS = [
     "STEER_NO_LINE_LINECOUNT", "STEER_MIN_VALID_ROWS", "STEER_ONE_LANE_MAX",
     "STEER_LANE_W_DEF", "STEER_STRAIGHT_RANGE", "STEER_TARGET_STEP", "STEER_START_TICKS",
     "CONE_CONFIRM_FRAMES", "CONE_ARM_CM", "STEER_LANE_FOLLOW", "STEER_FORCE_CENTER",
-    "CONE_LANE_CM", "CONE_HOLD_MAXTICKS", "CONE_CLEAR_TICKS", "CONE_LANE_HALF",
+    "CONE_LANE_CM", "CONE_RETURN_TAPER_FROM", "CONE_HOLD_MAXTICKS", "CONE_CLEAR_TICKS", "CONE_LANE_HALF",
     "CONE_TRIG_ROW", "CONE_MAX_GROUPS", "MOTOR_TEST_MODE", "MOTOR_TEST_PWM",
     "MOTOR_PWM_MAX", "MOTOR_RAMP_TICKS", "MOTOR_TEST_TARGET_SPEED", "SPEED_PERCENT",
     "MK_DIA_SPEED_PCT", "MK_DIA_CONFIRM", "MK_CW_CONFIRM", "MK_CW_NEAR_CONFIRM",
-    "MK_BAND_L", "MK_BAND_R", "MK_ROW_MIN", "MK_ROW_MAX", "MK_CW_RUN_MIN", "MK_CW_MIN_LANE_W", "MK_CW_SPAN_PCT", "MK_THIN_MIN", "MK_THIN_MAX", "MK_DIA_MIN_PAIRS", "MK_DIA_ROW_MAX", "MK_CW_MIN_ROWS", "MK_DIA_MIN_ROWS", "MK_DIA_MAX_ROWS",
+    "MK_BAND_L", "MK_BAND_R", "MK_ROW_MIN", "MK_ROW_MAX", "MK_CW_RUN_MIN", "MK_CW_SPAN_PCT", "MK_THIN_MIN", "MK_THIN_MAX", "MK_CW_MIN_ROWS", "MK_DIA_MIN_ROWS", "MK_DIA_MAX_ROWS",
     "MK_STOP_ROW", "MK_STOP_TICKS", "MK_PARK_DUTY", "CONE_ACT_ENABLE",
     "CONE_ROW_MIN", "CONE_ROW_MAX", "CONE_COL_MIN", "CONE_COL_MAX",
     "CONE_W_MIN", "CONE_W_MAX", "CONE_LINK_X", "CONE_NEAR_ROW",
@@ -243,9 +244,31 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   Marker_Scan(image);check(mk_cw_seen && mk_cw_near==56,"separated transverse stripes still identify a crosswalk");
   Line_Count=51;Marker_Scan(image);check(mk_cw_seen,"fresh near stripe plus raw striped pattern survives a short lane scan");
   memset(image,0,sizeof(image));Line_Count=4;
+  for(int y=15;y<=56;y++)for(int x=36;x<=84;x++)image[y*COL+x]=255;
+  Marker_Scan(image);check(!mk_cw_seen && mk_cw_bands==1,"one large glare patch cannot become multiple crosswalk stripes");
+  memset(image,0,sizeof(image));
+  for(int y=20;y<24;y++)for(int x=48;x<72;x++)image[y*COL+x]=255;
+  for(int y=45;y<49;y++)for(int x=48;x<72;x++)image[y*COL+x]=255;
+  Marker_Scan(image);check(!mk_cw_seen,"two small central blobs do not span enough of the crosswalk window");
+  memset(image,0,sizeof(image));
   for(int y=25;y<37;y++){int x=39+(y-25)/2;image[y*COL+x]=image[y*COL+x+1]=255;image[y*COL+120-x]=image[y*COL+119-x]=255;}
   Marker_Scan(image);check(mk_dia_seen && !mk_cw_seen,"hollow sloping marker requests slowdown only");
   Line_Count=40;Marker_Scan(image);check(mk_dia_seen,"current diamond pixels remain usable above lane extraction stop");
+ }
+ else if(!strcmp(argv[1],"crosswalk_edges_lost")){
+  lane(58,70);start();mk_state=1;
+  for(int y=35;y<=38;y++)for(int x=24;x<=96;x++)image[y*COL+x]=255;
+  for(int y=49;y<=53;y++)for(int x=24;x<=96;x++)image[y*COL+x]=255;
+  for(int i=0;i<MK_CW_CONFIRM;i++){
+   Marker_Scan(image);vision_processed_frames++;S3010_Control();Control_Speed();
+  }
+  check(mk_state==2 && (drive_inhibit_reason & 0x20),"crosswalk pixels can start the five-second wait despite collapsed lane edges");
+  for(int i=0;i<MK_STOP_TICKS-1;i++){vision_processed_frames++;S3010_Control();Control_Speed();}
+  check(mk_state==2 && mk_stop_elapsed_ms==4995,"edge loss does not shorten the stationary wait");
+  vision_processed_frames++;S3010_Control();Control_Speed();
+  check(mk_state==3 && mk_stop_elapsed_ms==5000,"crosswalk wait releases after five seconds even with hidden lane edges");
+  for(int i=0;i<200;i++){vision_processed_frames++;S3010_Control();Control_Speed();}
+  check(!drive_inhibit && LMotorSpeed>0,"verified crossing can move again through the paint");
  }
  else if(!strcmp(argv[1],"marker_frame")){
   lane(38,82);start();mk_cw_seen=1;mk_cw_near=50;
@@ -265,6 +288,26 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   run_distance_cm=CONE_ARM_CM;
   for(int i=0;i<CONE_CONFIRM_FRAMES;i++){Cone_Scan(image);vision_processed_frames++;S3010_Control();}
   check(cone_ok && steer_mode==3 && lane_k==0,"validated diagonal group can still trigger automatic avoidance");
+ }
+ else if(!strcmp(argv[1],"cone_return")){
+  lane(20,100);start();run_distance_cm=CONE_ARM_CM;
+  cone_ok=1;cone_cnt=3;cone_near=50;cone_x=80;
+  for(int i=0;i<CONE_CONFIRM_FRAMES;i++){vision_processed_frames++;S3010_Control();}
+  check(steer_mode==3 && steer_target==42 && cone_group_cnt==1,"first obstacle still starts the original left maneuver");
+  cone_ok=0;Run_Odo=120;vision_processed_frames++;S3010_Control();
+  check(steer_target==42 && cone_turn_percent==100,"first maneuver retains its existing calibrated lateral demand");
+  Run_Odo=CONE_LANE_CM;vision_processed_frames++;S3010_Control();
+  check(steer_mode==2,"first maneuver releases at its existing distance limit");
+  for(int i=0;i<CONE_CLEAR_TICKS;i++){vision_processed_frames++;S3010_Control();}
+  Run_Odo=200;cone_ok=1;
+  for(int i=0;i<CONE_CONFIRM_FRAMES;i++){vision_processed_frames++;S3010_Control();}
+  check(steer_mode==3 && steer_target==78 && cone_group_cnt==2,"second obstacle still begins an automatic right return");
+  cone_ok=0;Run_Odo=320;vision_processed_frames++;S3010_Control();
+  check(steer_target>60 && steer_target<78 && cone_turn_percent<100,"second return tapers instead of holding full right lock");
+  Run_Odo=360;vision_processed_frames++;S3010_Control();
+  check(steer_target<=62 && steer_target>=60,"second return approaches neutral before its old end point");
+  Run_Odo=370;vision_processed_frames++;S3010_Control();
+  check(steer_mode==2 && steer_target==60 && servo_pwm==933,"return releases smoothly to normal lane following");
  }
  else if(!strcmp(argv[1],"cone_start")){
   lane(20,100);start();cone_ok=1;cone_cnt=6;cone_near=56;cone_x=100;
@@ -312,7 +355,7 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
 
 def main():
     definitions = "".join(macro(name) for name in CONSTANTS)
-    functions = '#include "Mai_cone_geometry.h"\n' + function(IMAGE_SOURCE, "Mai_Near_White_Scan") + function(IMAGE_SOURCE, "Cone_Scan") + function(IMAGE_SOURCE, "Mai_Diamond_Scan") + function(IMAGE_SOURCE, "Marker_Scan")
+    functions = '#include "Mai_cone_geometry.h"\n' + function(IMAGE_SOURCE, "Mai_Near_White_Scan") + function(IMAGE_SOURCE, "Cone_Scan") + function(IMAGE_SOURCE, "Mai_Diamond_Scan") + function(IMAGE_SOURCE, "Mai_Crosswalk_Scan") + function(IMAGE_SOURCE, "Marker_Scan")
     functions += "".join(function(PID_SOURCE, n) for n in ["PlacePID_Control", "RMotorPid_Col", "LMotorPid_Col"])
     functions += "".join(function(CONTROL, n) for n in ["Mai_Lane_Row_Usable", "S3010_Control", "Motor_Control", "Point_Control", "Control_Speed", "Least_Sqaure_Method", "Fictitious_Beeline", "Tof_Get_Distance", "Tof_Get_Age_Ms"])
     with tempfile.TemporaryDirectory(prefix="Mai_control_regression_") as directory:
@@ -338,9 +381,9 @@ def main():
             subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror=format", "-Werror=implicit-function-declaration", "-I", str(ROOT / "code"), f"-DMK_FINAL_STOP={final}", f"-DMK_ACT_ENABLE={actions}", f"-DCONE_ACT_ENABLE={cone}", str(source), "-lm", "-o", str(executable)], check=True)
             cases = ["crosswalk"]
             if final and actions:
-                cases += ["straight", "cone", "cone_start", "fit", "distance", "corridor", "diamond_hold", "near_lane", "vision", "tof_odo", "cross_limit", "near_band", "marker_image", "marker_frame"]
+                cases += ["straight", "cone", "cone_start", "fit", "distance", "corridor", "diamond_hold", "near_lane", "vision", "tof_odo", "cross_limit", "near_band", "marker_image", "crosswalk_edges_lost", "marker_frame"]
                 if cone:
-                    cases.append("perception")
+                    cases += ["perception", "cone_return"]
                 if replay:
                     cases.append("replay")
                 else:

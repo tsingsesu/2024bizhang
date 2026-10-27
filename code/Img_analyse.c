@@ -103,22 +103,18 @@ uint8 agl_blob_pair     = 0;   // diag: rows that contained two glare-sized whit
 #define MK_ROW_MIN              (8)     // 扫描最远行
 #define MK_ROW_MAX              (58)    // 扫描最近行
 #define MK_CW_RUN_MIN           (22)    // 连续白带 >= 此宽度 = 人行横道的一行（灰底，必须有间断的黑色缝）
-#define MK_CW_ROW_MIN           (22)    // 同一行白点数下限
 #define MK_CW_MIN_ROWS          (4)     // 至少几行白带才判人行横道（停车线只有 1~2 行）
 #define MK_THIN_MIN             (2)     // 细白线最少宽度(px)
 #define MK_THIN_MAX             (10)    // 细白线最大宽度(px)
-#define MK_DIA_MIN_PAIRS        (2)     // 同一行至少几条细白线（菱形两条斜边，中线只有一条）
-#define MK_DIA_ROW_MAX          (50)    // 菱形行白点数上限（再大就是横道/反光）
 #define MK_DIA_MIN_ROWS         (6)     // 至少几行才判菱形
 #define MK_DIA_MAX_ROWS         (40)    // 超过这个行数不算菱形（防止整屏误判）
-#define MK_CW_STOPLINE_ROW      (52)    // 近车头 52 行以后出现单条白带 = 停车线
-#define MK_CW_SPAN_PCT          (60)   // [2026-10-26] 连续白带要占到本行车道宽的百分之多少才算人行横道；误杀就调小，误判就调大
-#define MK_CW_MIN_LANE_W        (30)   // [2026-10-26] 本行车道宽小于它就跳过这一行（边界不可信，判了也是错的）
+#define MK_CW_SPAN_PCT          (60)   /* Minimum white coverage of the central window. */
 
 volatile uint8 mk_cw_seen = 0,  mk_cw_near  = 0, mk_cw_score  = 0;   // 人行横道
 volatile uint8 mk_dia_seen = 0, mk_dia_near = 0, mk_dia_score = 0;   // 减速菱形
 volatile uint8 mk_state = 0; /* 0 lane, 1 slow, 2 wait, 3 cross, 4 passed */
 volatile uint8 mk_near_white = 0;
+volatile uint8 mk_cw_bands = 0;
 
 static uint8 Mai_Near_White_Scan(uint8 *data)
 {
@@ -185,127 +181,77 @@ static uint8 Mai_Diamond_Scan(uint8 *data, uint8 *near_row)
     return best;
 }
 
+/* Crosswalk paint interrupts lane extraction itself. Use current pixels,
+   requiring multiple broad, centre-spanning stripes with real dark gaps,
+   rather than demanding valid lane edges inside the white paint. */
+static uint8 Mai_Crosswalk_Scan(uint8 *data, uint8 *near_row, uint8 *bands)
+{
+    uint8 y, x, run, begin, broad, dark, height = 0, gap = 2, accepted = 0, rows = 0;
+    *near_row = *bands = 0;
+    for(y = MK_ROW_MIN; y <= MK_ROW_MAX; y ++)
+    {
+        run = broad = dark = 0;
+        begin = MK_BAND_L;
+        for(x = MK_BAND_L; x <= MK_BAND_R; x ++)
+        {
+            if(data[y * COL + x])
+            {
+                if(!run) begin = x;
+                run ++;
+                if(run >= MK_CW_RUN_MIN &&
+                   (uint16)run * 100 >= (MK_BAND_R - MK_BAND_L + 1) * MK_CW_SPAN_PCT &&
+                   begin <= COL / 2 - 12 && x >= COL / 2 + 12)
+                    broad = 1;
+            }
+            else
+            {
+                run = 0;
+                if(x >= COL / 2 - 10 && x <= COL / 2 + 10) dark ++;
+            }
+        }
+        if(broad)
+        {
+            if(!height) accepted = (uint8)(gap >= 2);
+            height ++;
+            gap = 0;
+            /* At least two rows per stripe; isolated fragments are insufficient. */
+            if(accepted && height >= 2)
+            {
+                if(height == 2) { (*bands) ++; rows += 2; }
+                else rows ++;
+                *near_row = y;
+            }
+        }
+        else
+        {
+            height = accepted = 0;
+            if(dark >= 16) { if(gap < 255) gap ++; }
+            else gap = 0;
+        }
+    }
+    return rows;
+}
+
 void Marker_Scan(uint8 *data)
 {
-    uint8 i, j, j0, w;
-    uint8 cw_rows = 0, dia_rows = 0;
-    uint8 cw_near = 0, dia_near = 0;
-    uint8 cw_bands = 0, raw_band = 0, black_gap = 2;
-    uint8 run_max;
+    uint8 cw_rows, dia_rows, cw_near = 0, dia_near = 0, bands = 0;
     mk_near_white = Mai_Near_White_Scan(data);
-
-    /* [2026-10-22] 整幅过曝(>190)或过暗(<10)时二值图没有意义，
-       起跑瞬间 iavg=205 会让人行横道误报。 */
+    mk_cw_bands = 0;
     if(diedai_img_avg > 190 || diedai_img_avg < 10)
     {
         mk_cw_seen = 0;  mk_cw_near = 0;  mk_cw_score = 0;
         mk_dia_seen = 0; mk_dia_near = 0; mk_dia_score = 0;
         return;
     }
-
-    for(i = MK_ROW_MIN; i <= MK_ROW_MAX; i ++)
-    {
-        /* [2026-10-26] 原来固定扫 MK_BAND_L~MK_BAND_R（36~84）这 49 列，
-           不管车道在哪，也不管这一行到底有多宽。结果自制锥桶近看时
-           一条 20+px 的连续白带就满足 run_max>=22 和 wc>=22，
-           直接被人行横道判据吃下 -> mk_state=2 -> 停车 5 秒，车死在障碍前面。
-
-           改成【相对本行车道】来判断：
-             人行横道 = 一条白带横跨整条车道（>= MK_CW_SPAN_PCT% 车道宽，且盖住车道中心）
-             锥桶     = 一条窄白带，只占车道的一小段，盖不住中心
-           本行车道宽不可信（边界贴边/丢线）就跳过这一行，宁可不判也不误判。 */
-        uint16 lx = Left_Line[i];
-        uint16 rx = Right_Line[i];
-        uint8  c0, c1, lane_w;
-        uint8  run_s = 0, run_e = 0;
-        uint8  has_c = 0;
-        uint8 raw_w = 0, raw_max = 0;
-
-        /* Validate a striped pattern directly in this image. A single solid
-           blob or diamond cannot be promoted to a crosswalk by its height. */
-        for(j = MK_BAND_L; j <= MK_BAND_R; j ++)
-        {
-            if(data[i * COL + j])
-            {
-                raw_w ++;
-                if(raw_w > raw_max && j >= COL / 2 && j - raw_w + 1 <= COL / 2)
-                    raw_max = raw_w;
-            }
-            else raw_w = 0;
-        }
-        if(raw_max >= MK_CW_RUN_MIN && data[i * COL + COL / 2])
-        {
-            if(!raw_band && black_gap >= 2) cw_bands ++;
-            raw_band = 1;
-            black_gap = 0;
-        }
-        else
-        {
-            raw_band = 0;
-            if(black_gap < 255) black_gap ++;
-        }
-        /* Image_Handle stops early on paint/occlusion. Rows above its stop
-           retain old edge arrays and must never provide marker geometry. */
-        if(Line_Count < 0 || i <= Line_Count) continue;
-
-        run_max = 0; j0 = 0; w = 0;
-
-        if(lx < 2 || rx > (COL - 3) || rx <= lx + MK_CW_MIN_LANE_W)
-            continue;                       /* 本行边界不可信 */
-
-        c0     = (uint8)(lx + 1);
-        c1     = (uint8)(rx - 1);
-        lane_w = (uint8)(c1 - c0 + 1);
-
-        for(j = c0; j <= c1; j ++)
-        {
-            if(data[i * COL + j])
-            {
-                w ++;
-                if(w == 1) j0 = j;
-            }
-            else if(w)
-            {
-
-                if(w > run_max) { run_max = w; run_s = j0; run_e = (uint8)(j - 1); }
-                w = 0;
-            }
-        }
-        if(w)                                   /* 行尾还有一段白 */
-        {
-
-            if(w > run_max) { run_max = w; run_s = j0; run_e = c1; }
-        }
-
-        /* 最长白带有没有盖住车道中心列 */
-        if(run_max)
-        {
-            uint8 cx = (uint8)((c0 + c1) / 2);
-            if(cx >= run_s && cx <= run_e) has_c = 1;
-        }
-
-        /* 人行横道：连续白带横跨本车道，且盖住车道中心 */
-        if(run_max >= MK_CW_RUN_MIN && run_max >= (uint8)(((uint16)lane_w * MK_CW_SPAN_PCT) / 100) && has_c)
-        {
-            cw_rows ++;
-            cw_near = i;
-        }
-
-    }
-
-    
+    cw_rows = Mai_Crosswalk_Scan(data, &cw_near, &bands);
     dia_rows = Mai_Diamond_Scan(data, &dia_near);
-    mk_cw_score  = cw_rows;
+    mk_cw_bands = bands;
+    mk_cw_score = cw_rows;
     mk_dia_score = dia_rows;
-    /* [2026-10-26] 这里原来有个「只看到 1~3 行就当成停车线、直接升格成横道」的捷径。
-       实测 O=3351 那次 cw_rows 只有 3 行（日志 CW=0/0/3）就被升格 ->
-       mk_state=2 -> 停 5 秒，车死在障碍前面。
-       横道本身有 MK_CW_MIN_ROWS 行以上，靠近时 cw_near 也一定会涨过 MK_STOP_ROW，
-       不需要这个捷径。 */
-    mk_cw_seen   = (cw_rows >= MK_CW_MIN_ROWS && cw_bands >= 2);
-    mk_dia_seen  = (dia_rows >= MK_DIA_MIN_ROWS && dia_rows <= MK_DIA_MAX_ROWS);
-    mk_cw_near   = mk_cw_seen  ? cw_near  : 0;
-    mk_dia_near  = mk_dia_seen ? dia_near : 0;
+    mk_cw_seen = (uint8)(cw_rows >= MK_CW_MIN_ROWS && bands >= 2);
+    mk_dia_seen = (uint8)(dia_rows >= MK_DIA_MIN_ROWS && dia_rows <= MK_DIA_MAX_ROWS);
+    mk_cw_near = mk_cw_seen ? cw_near : 0;
+    mk_dia_near = mk_dia_seen ? dia_near : 0;
 }
 
 /* ================= [2026-10-26] 终点线探测（只记录，不动作）=============
