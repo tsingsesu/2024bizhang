@@ -138,12 +138,60 @@ static uint8 Mai_Near_White_Scan(uint8 *data)
     return 0;
 }
 
+/* Inspect current pixels independently of lane extraction: a diamond may
+   itself stop that extraction. Two vertical parallel lane lines are not a
+   diamond; its two thin sides must move in opposite horizontal directions. */
+static uint8 Mai_Diamond_Scan(uint8 *data, uint8 *near_row)
+{
+    uint8 y, x, n, w, begin, left = 0, right = 0;
+    uint8 chain = 0, best = 0, first_l = 0, first_r = 0, last_l = 0, last_r = 0;
+    *near_row = 0;
+    for(y = MK_ROW_MIN; y <= MK_ROW_MAX; y ++)
+    {
+        uint8 valid = 1;
+        n = 0;
+        x = MK_BAND_L;
+        while(x <= MK_BAND_R)
+        {
+            if(!data[y * COL + x]) { x ++; continue; }
+            begin = x;
+            w = 0;
+            while(x <= MK_BAND_R && data[y * COL + x]) { w ++; x ++; }
+            if(w < MK_THIN_MIN || w > MK_THIN_MAX || begin == MK_BAND_L || x > MK_BAND_R)
+                valid = 0;
+            if(n == 0) left = (uint8)(begin + w / 2);
+            else if(n == 1) right = (uint8)(begin + w / 2);
+            n ++;
+        }
+        if(!valid || n != 2 || right <= left + 12)
+        { chain = 0; continue; }
+        if(!chain || ABS((int16)left - last_l) > 4 || ABS((int16)right - last_r) > 4)
+        {
+            chain = 0;
+            first_l = left;
+            first_r = right;
+        }
+        chain ++;
+        last_l = left;
+        last_r = right;
+        if(chain >= MK_DIA_MIN_ROWS && chain <= MK_DIA_MAX_ROWS &&
+           (((int16)left - first_l >= 3 && (int16)first_r - right >= 3) ||
+            ((int16)first_l - left >= 3 && (int16)right - first_r >= 3)))
+        {
+            if(chain > best) best = chain;
+            *near_row = y;
+        }
+    }
+    return best;
+}
+
 void Marker_Scan(uint8 *data)
 {
     uint8 i, j, j0, w;
     uint8 cw_rows = 0, dia_rows = 0;
     uint8 cw_near = 0, dia_near = 0;
-    uint8 wc, run_max, pairs;
+    uint8 cw_bands = 0, raw_band = 0, black_gap = 2;
+    uint8 run_max;
     mk_near_white = Mai_Near_White_Scan(data);
 
     /* [2026-10-22] 整幅过曝(>190)或过暗(<10)时二值图没有意义，
@@ -170,10 +218,37 @@ void Marker_Scan(uint8 *data)
         uint16 rx = Right_Line[i];
         uint8  c0, c1, lane_w;
         uint8  run_s = 0, run_e = 0;
-        uint8  thin_l = 255, thin_r = 0;
         uint8  has_c = 0;
+        uint8 raw_w = 0, raw_max = 0;
 
-        wc = 0; run_max = 0; pairs = 0; j0 = 0; w = 0;
+        /* Validate a striped pattern directly in this image. A single solid
+           blob or diamond cannot be promoted to a crosswalk by its height. */
+        for(j = MK_BAND_L; j <= MK_BAND_R; j ++)
+        {
+            if(data[i * COL + j])
+            {
+                raw_w ++;
+                if(raw_w > raw_max && j >= COL / 2 && j - raw_w + 1 <= COL / 2)
+                    raw_max = raw_w;
+            }
+            else raw_w = 0;
+        }
+        if(raw_max >= MK_CW_RUN_MIN && data[i * COL + COL / 2])
+        {
+            if(!raw_band && black_gap >= 2) cw_bands ++;
+            raw_band = 1;
+            black_gap = 0;
+        }
+        else
+        {
+            raw_band = 0;
+            if(black_gap < 255) black_gap ++;
+        }
+        /* Image_Handle stops early on paint/occlusion. Rows above its stop
+           retain old edge arrays and must never provide marker geometry. */
+        if(Line_Count < 0 || i <= Line_Count) continue;
+
+        run_max = 0; j0 = 0; w = 0;
 
         if(lx < 2 || rx > (COL - 3) || rx <= lx + MK_CW_MIN_LANE_W)
             continue;                       /* 本行边界不可信 */
@@ -186,30 +261,19 @@ void Marker_Scan(uint8 *data)
         {
             if(data[i * COL + j])
             {
-                wc ++;
                 w ++;
                 if(w == 1) j0 = j;
             }
             else if(w)
             {
-                if(w >= MK_THIN_MIN && w <= MK_THIN_MAX)
-                {
-                    pairs ++;
-                    if(j0 < thin_l)   thin_l = j0;
-                    if(j  > thin_r)   thin_r = (uint8)j;
-                }
+
                 if(w > run_max) { run_max = w; run_s = j0; run_e = (uint8)(j - 1); }
                 w = 0;
             }
         }
         if(w)                                   /* 行尾还有一段白 */
         {
-            if(w >= MK_THIN_MIN && w <= MK_THIN_MAX)
-            {
-                pairs ++;
-                if(j0 < thin_l) thin_l = j0;
-                if(c1 > thin_r) thin_r = c1;
-            }
+
             if(w > run_max) { run_max = w; run_s = j0; run_e = c1; }
         }
 
@@ -221,22 +285,16 @@ void Marker_Scan(uint8 *data)
         }
 
         /* 人行横道：连续白带横跨本车道，且盖住车道中心 */
-        if(run_max >= (uint8)(((uint16)lane_w * MK_CW_SPAN_PCT) / 100) && has_c)
+        if(run_max >= MK_CW_RUN_MIN && run_max >= (uint8)(((uint16)lane_w * MK_CW_SPAN_PCT) / 100) && has_c)
         {
             cw_rows ++;
             cw_near = i;
         }
-        /* 菱形：同一行至少两条细白线，且左右拉得够开（横跨半个车道以上）。
-           一排锥桶的细白段是挤在一起的，跨不了这么宽。 */
-        else if(pairs >= MK_DIA_MIN_PAIRS && wc <= MK_DIA_ROW_MAX &&
-                thin_r > thin_l && (uint16)(thin_r - thin_l) >= (uint16)(lane_w / 2))
-        {
-            dia_rows ++;
-            dia_near = i;
-        }
+
     }
 
     
+    dia_rows = Mai_Diamond_Scan(data, &dia_near);
     mk_cw_score  = cw_rows;
     mk_dia_score = dia_rows;
     /* [2026-10-26] 这里原来有个「只看到 1~3 行就当成停车线、直接升格成横道」的捷径。
@@ -244,7 +302,7 @@ void Marker_Scan(uint8 *data)
        mk_state=2 -> 停 5 秒，车死在障碍前面。
        横道本身有 MK_CW_MIN_ROWS 行以上，靠近时 cw_near 也一定会涨过 MK_STOP_ROW，
        不需要这个捷径。 */
-    mk_cw_seen   = (cw_rows >= MK_CW_MIN_ROWS);
+    mk_cw_seen   = (cw_rows >= MK_CW_MIN_ROWS && cw_bands >= 2);
     mk_dia_seen  = (dia_rows >= MK_DIA_MIN_ROWS && dia_rows <= MK_DIA_MAX_ROWS);
     mk_cw_near   = mk_cw_seen  ? cw_near  : 0;
     mk_dia_near  = mk_dia_seen ? dia_near : 0;

@@ -218,6 +218,19 @@ uint8  Set_Speed;        //速度挡位  超过8为全程匀速
 
 
 // 舵机控制
+/* Use only an actual corridor or a plausible single edge, never both
+   clipped defaults. Called only for rows produced in the current frame. */
+static uint8 Mai_Lane_Row_Usable(uint8 row)
+{
+    int32 l = Left_Line[row], r = Right_Line[row];
+    uint8 l_ok = (uint8)(l > 6 && l < (MT9V03X_W - 3));
+    uint8 r_ok = (uint8)(r > 6 && r < (MT9V03X_W - 3));
+    if(r - l < 20 || r - l > 140) return 0;
+    if(l_ok && r_ok) return 1;
+    return (uint8)((l_ok && l < (MT9V03X_W * 3 / 4)) ||
+                   (r_ok && r > (MT9V03X_W / 4)));
+}
+
 void S3010_Control(void)
 {
     static uint16 start_ticks = 0;
@@ -225,7 +238,21 @@ void S3010_Control(void)
     static uint32 last_vision_frame = 0;
     uint8 cone_steering = 0;
     uint8 look_row = 22;
-    if(Line_Count > 22 && Line_Count <= 48) look_row = (uint8)(Line_Count + 2);
+    if(Line_Count > 22 && Line_Count <= 52) look_row = (uint8)(Line_Count + 2);
+    /* Paint and cones can corrupt one scan row while nearer road edges remain
+       visible. Require two adjacent usable rows before taking a fallback. */
+    if(Line_Count >= 0 && Line_Count <= 52 && !Mai_Lane_Row_Usable(look_row))
+    {
+        uint8 row;
+        for(row = (uint8)(look_row + 1); row <= 54; row ++)
+        {
+            if(Mai_Lane_Row_Usable(row) && Mai_Lane_Row_Usable((uint8)(row + 1)))
+            {
+                look_row = row;
+                break;
+            }
+        }
+    }
     steer_look_row = look_row;
     if(vision_processed_frames != last_vision_frame)
     {
@@ -323,7 +350,7 @@ void S3010_Control(void)
         if(Right_Line[look_row] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0200;  // 22行右边撞墙
         if(Left_Line[14] <= 2)                            steer_guard_bits |= 0x0400;  // 14行左边撞墙
         if(Right_Line[14] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0800;  // 14行右边撞墙
-        if(Line_Count < 0 || Line_Count > 48)             steer_guard_bits |= 0x1000;
+        if(Line_Count < 0 || Line_Count > 52)             steer_guard_bits |= 0x1000;
         if(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS)
             steer_guard_bits |= 0x2000;
         /* ★宽度归一化 + 单边补线（2026-10-24）
@@ -701,11 +728,9 @@ void Motor_Control(void)
 */
 /* [2026-10-22] 把 2026 标线常量放到函数外，避免在函数中间写 #define 污染后续代码。 */
 #define MK_DIA_SPEED_PCT    (50)      // 菱形处速度 = 原速的 50%
-#define MK_GAP_CM           (60)      // 菱形消失后再走多少 cm 恢复原速
-                                            // 现在 60 tick ≈ 12 帧 ≈ 240ms，32 tick ≈ 6 帧 ≈ 120ms
-#define MK_DIA_CONFIRM              (32)    // [2026-10-26] 8->32：同上，8 个 tick 只有 2 个相机帧
-#define MK_CW_CONFIRM               (60)    // [2026-10-26] 15->60。这个计数器是按 5ms 中断加的，而 mk_cw_seen 每 ~20ms（相机帧）才更新
-                                                   // 一次，原来的 15 实际只等于 4 个相机帧，太容易误锁
+#define MK_DIA_CONFIRM       (8)       /* Distinct completed camera frames. */
+#define MK_CW_CONFIRM        (15)      /* Crosswalk pattern persists across completed frames. */
+#define MK_CW_NEAR_CONFIRM    (3)      /* Near position also needs independent confirmation. */
 #define MK_STOP_ROW                 (45)     // 横道要到这一行以后才停（行号越大越近车头）
 #define MK_STOP_TICKS       (1000)    // 停车 5 秒（5ms * 1000）
 #define MK_CROSS_SPEED      (10)      /* Encoder counts per 5 ms, before the normal ramp. */
@@ -750,8 +775,8 @@ void Control_Speed(void)
 {
     static uint16 ramp_cnt = 0, mk_stop_cnt = 0;
     static int32 out_L = 0, out_R = 0;
-    static uint8 mk_dia_run = 0, mk_cw_run = 0, cross_near_seen = 0;
-    static uint32 cross_frame = 0;
+    static uint8 mk_dia_run = 0, mk_cw_run = 0, mk_cw_near_run = 0, cross_near_seen = 0;
+    static uint32 cross_frame = 0, marker_frame = 0;
     static double cross_start_cm = 0, last_white_cm = 0;
     uint8 vision_fault;
 
@@ -767,18 +792,29 @@ void Control_Speed(void)
     {
         mk_state = 0;
         mk_stop_cnt = 0;
-        mk_dia_run = mk_cw_run = cross_near_seen = 0;
+        mk_dia_run = mk_cw_run = mk_cw_near_run = cross_near_seen = 0;
+        marker_frame = vision_processed_frames;
         mk_stop_elapsed_ms = mk_finish_reason = 0;
         mk_clear_remaining_mm = MK_CLEAR_CM * 10;
     }
     else
     {
-        if(mk_dia_seen) { if(mk_dia_run < 255) mk_dia_run ++; } else mk_dia_run = 0;
-        if(mk_cw_seen) { if(mk_cw_run < 255) mk_cw_run ++; } else mk_cw_run = 0;
+        if(marker_frame != vision_processed_frames)
+        {
+            marker_frame = vision_processed_frames;
+            if(mk_dia_seen) { if(mk_dia_run < 255) mk_dia_run ++; } else mk_dia_run = 0;
+            if(mk_cw_seen) { if(mk_cw_run < 255) mk_cw_run ++; } else mk_cw_run = 0;
+            if(mk_cw_seen && mk_cw_near >= MK_STOP_ROW)
+            { if(mk_cw_near_run < 255) mk_cw_near_run ++; }
+            else mk_cw_near_run = 0;
+        }
+        if(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS)
+            mk_dia_run = mk_cw_run = mk_cw_near_run = 0;
 
         if(mk_state == 0 || mk_state == 1)
         {
-            if(mk_cw_run >= MK_CW_CONFIRM && mk_cw_near >= MK_STOP_ROW)
+            if(mk_cw_run >= MK_CW_CONFIRM && mk_cw_near_run >= MK_CW_NEAR_CONFIRM &&
+               mk_cw_seen && mk_cw_near >= MK_STOP_ROW)
             {
                 mk_state = 2;
                 mk_stop_cnt = 0;
@@ -790,12 +826,8 @@ void Control_Speed(void)
                 Distance = 0;
                 Distance_ON = 1;
             }
-            else if(mk_state == 1 && !mk_dia_seen && Distance > MK_GAP_CM)
-            {
-                Distance = 0;
-                Distance_ON = 0;
-                mk_state = 0;
-            }
+            /* Keep the first confirmed slowdown through both diamonds and the
+               unmarked gap. Only the crosswalk advances this state. */
         }
         else if(mk_state == 2)
         {
