@@ -15,7 +15,7 @@ extern volatile uint8 tof_has_sample;
 extern uint16 vision_age_ticks, track_bad_ticks;
 extern uint8 steer_look_row;
 extern uint16 steer_lane_left, steer_lane_right;
-extern uint8 drive_inhibit, mk_finish_reason;
+extern uint8 drive_inhibit, drive_inhibit_reason, mk_finish_reason;
 extern uint16 mk_stop_elapsed_ms, mk_clear_remaining_mm;
 extern double run_distance_cm;
 uint16 Tof_Get_Distance(void);

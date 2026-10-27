@@ -61,7 +61,7 @@ double Distance,Distance_Test,Run_Odo; float Mid_Ka,Mid_Kb;
 volatile uint32 isr_tick_5ms,vision_processed_frames,tof_sample_tick;
 uint16 vision_age_ticks,track_bad_ticks,mk_stop_elapsed_ms,mk_clear_remaining_mm,steer_lane_left,steer_lane_right;
 uint8 steer_look_row,mk_cw_score,mk_dia_score,mk_dia_near;
-uint8 drive_inhibit,mk_finish_reason,mk_near_white,tof_has_sample;
+uint8 drive_inhibit,drive_inhibit_reason,mk_finish_reason,mk_near_white,tof_has_sample;
 uint16 tof_sample_mm;double run_distance_cm;
 #define MT9V03X_W 120
 #define COL 120
@@ -90,7 +90,7 @@ int16 Fictitious_Beeline(float,float);
 CONSTANTS = [
     "STEER_NO_LINE_LINECOUNT", "STEER_MIN_VALID_ROWS", "STEER_ONE_LANE_MAX",
     "STEER_LANE_W_DEF", "STEER_STRAIGHT_RANGE", "STEER_TARGET_STEP", "STEER_START_TICKS",
-    "CONE_CONFIRM_FRAMES", "STEER_LANE_FOLLOW", "STEER_FORCE_CENTER",
+    "CONE_CONFIRM_FRAMES", "CONE_ARM_CM", "STEER_LANE_FOLLOW", "STEER_FORCE_CENTER",
     "CONE_LANE_CM", "CONE_HOLD_MAXTICKS", "CONE_CLEAR_TICKS", "CONE_LANE_HALF",
     "CONE_TRIG_ROW", "CONE_MAX_GROUPS", "MOTOR_TEST_MODE", "MOTOR_TEST_PWM",
     "MOTOR_PWM_MAX", "MOTOR_RAMP_TICKS", "MOTOR_TEST_TARGET_SPEED", "SPEED_PERCENT",
@@ -126,10 +126,10 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   lane(38,82);Point=2;Line_Count=59;S3010_Control();check(steer_mode==4 && servo_pwm==933,"invalid fitted point returns to neutral");
  }
  else if(!strcmp(argv[1],"cone")){
-  lane(20,100);cone_ok=1;cone_cnt=2;cone_near=50;cone_x=80;start();
-  vision_processed_frames=1;for(int i=0;i<100;i++){S3010_Control();check(steer_mode!=3,"one cone frame cannot trigger a maneuver");}
-  vision_processed_frames=2;S3010_Control();check(steer_mode!=3,"two frames do not confirm a cone");
-  vision_processed_frames=3;S3010_Control();
+  lane(20,100);cone_ok=1;cone_cnt=2;cone_near=50;cone_x=80;start();run_distance_cm=CONE_ARM_CM;
+  vision_processed_frames++;for(int i=0;i<20;i++){S3010_Control();check(steer_mode!=3,"one cone frame cannot trigger a maneuver");}
+  vision_processed_frames++;S3010_Control();check(steer_mode!=3,"two frames do not confirm a cone");
+  vision_processed_frames++;S3010_Control();
 #if CONE_ACT_ENABLE
   check(steer_mode==3 && steer_target==42,"confirmed cone remains able to maneuver when enabled");
 #else
@@ -144,7 +144,7 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
   mk_cw_seen=1;mk_cw_near=50;for(int i=0;i<MK_CW_CONFIRM;i++){vision_processed_frames++;Control_Speed();}
   check(mk_state==2 && !end_stopped,"crosswalk first enters temporary stop");
 #if MK_ACT_ENABLE
-  check(drive_inhibit && LMotorSpeed==0,"temporary stop immediately inhibits output");
+  check(drive_inhibit && (drive_inhibit_reason & 0x20) && LMotorSpeed==0,"temporary stop immediately inhibits output");
   Lrealspeed=Rrealspeed=5;for(int i=0;i<200;i++)Control_Speed();
   check(mk_state==2 && mk_stop_elapsed_ms==0,"moving vehicle cannot consume the five stationary seconds");
   Lrealspeed=Rrealspeed=0;for(int i=0;i<MK_STOP_TICKS-1;i++)Control_Speed();
@@ -200,13 +200,13 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
  }
  else if(!strcmp(argv[1],"vision")){
   lane(38,82);start();vision_processed_frames=0;
-  for(int i=0;i<1200;i++){Control_Speed();}check(drive_inhibit && LMotorSpeed==0,"no processed image cannot accelerate");
+  for(int i=0;i<1200;i++){Control_Speed();}check(drive_inhibit && (drive_inhibit_reason & 0x08) && LMotorSpeed==0,"no processed image cannot accelerate");
   motor_pwm[1]=motor_pwm[2]=2000;Motor_Control();check(motor_pwm[1]==0 && motor_pwm[2]==0,"missing camera inhibits actual motor output");
   vision_processed_frames=1000;vision_age_ticks=0;track_bad_ticks=0;Control_Speed();check(LMotorSpeed==0,"camera recovery restarts ramp from zero");
   for(int i=0;i<1200;i++){Control_Speed();}check(LMotorSpeed>0,"valid camera can recover");
   vision_age_ticks=VISION_STALE_TICKS;Control_Speed();check(drive_inhibit && LMotorSpeed==0,"stalled processing stops vehicle");
   vision_age_ticks=0;Line_Count=59;for(int i=0;i<TRACK_LOSS_TICKS;i++){vision_processed_frames++;S3010_Control();}
-  Control_Speed();check(drive_inhibit && LMotorSpeed==0,"persistent invalid lane stops vehicle");
+  Control_Speed();check(drive_inhibit && (drive_inhibit_reason & 0x10) && LMotorSpeed==0,"persistent invalid lane stops vehicle");
  }
  else if(!strcmp(argv[1],"tof_odo")){
   lane(38,82);start();mock_encoder[1]=100;mock_encoder[2]=-100;Motor_Control();
@@ -262,8 +262,27 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
    check(cone_cnt==2 && !cone_ok && steer_mode!=3 && lane_k==75,"repeated raw two-blob false detections never enter a maneuver");
   }
   memset(image,0,sizeof(image));band(26,25);band(51,40);band(76,55);
+  run_distance_cm=CONE_ARM_CM;
   for(int i=0;i<CONE_CONFIRM_FRAMES;i++){Cone_Scan(image);vision_processed_frames++;S3010_Control();}
   check(cone_ok && steer_mode==3 && lane_k==0,"validated diagonal group can still trigger automatic avoidance");
+ }
+ else if(!strcmp(argv[1],"cone_start")){
+  lane(20,100);start();cone_ok=1;cone_cnt=6;cone_near=56;cone_x=100;
+  for(int i=0;i<100;i++){
+   vision_processed_frames++;S3010_Control();
+   check(steer_mode!=3 && cone_group_cnt==0,"persistent startup glare cannot trigger avoidance");
+  }
+  run_distance_cm=CONE_ARM_CM-1;
+  for(int i=0;i<10;i++){vision_processed_frames++;S3010_Control();}
+  check(steer_mode!=3,"arming distance must really be reached");
+  run_distance_cm=CONE_ARM_CM;
+  for(int i=0;i<CONE_CONFIRM_FRAMES;i++){vision_processed_frames++;S3010_Control();}
+#if CONE_ACT_ENABLE
+  check(steer_mode==3,"automatic avoidance is still available in the obstacle zone");
+  Stop_1=0;S3010_Control();cone_ok=0;start();
+  run_distance_cm=CONE_ARM_CM;vision_processed_frames++;S3010_Control();
+  check(steer_mode!=3 && cone_group_cnt==0,"releasing a new run cannot inherit an old latched turn");
+#endif
  }
  else if(!strcmp(argv[1],"fit")){
   float a,b;lane(38,82);
@@ -319,7 +338,7 @@ def main():
             subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror=format", "-Werror=implicit-function-declaration", "-I", str(ROOT / "code"), f"-DMK_FINAL_STOP={final}", f"-DMK_ACT_ENABLE={actions}", f"-DCONE_ACT_ENABLE={cone}", str(source), "-lm", "-o", str(executable)], check=True)
             cases = ["crosswalk"]
             if final and actions:
-                cases += ["straight", "cone", "fit", "distance", "corridor", "diamond_hold", "near_lane", "vision", "tof_odo", "cross_limit", "near_band", "marker_image", "marker_frame"]
+                cases += ["straight", "cone", "cone_start", "fit", "distance", "corridor", "diamond_hold", "near_lane", "vision", "tof_odo", "cross_limit", "near_band", "marker_image", "marker_frame"]
                 if cone:
                     cases.append("perception")
                 if replay:

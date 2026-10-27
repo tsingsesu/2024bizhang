@@ -701,7 +701,8 @@ uint8 Diedai(uint8 *image, uint16 col, uint16 row)//    µü´ú·¨     //
     int32  X, lP1, lP2, lS1, lS2;
     uint8  A1, A2, T0;
     uint8 *data = image;
-    int32  min = 255, max = 0;
+    int32  min = 255, max = 0, split_max;
+    uint32 tail = 0, trim_count = ((uint32)col * row) / 100;
 
     for (i = 0; i < 256; i ++)
     {
@@ -736,26 +737,35 @@ uint8 Diedai(uint8 *image, uint16 col, uint16 row)//    µü´ú·¨     //
         }
         diedai_img_avg = (uint8)(sum / (cnt32 ? cnt32 : 1));
     }
-    T0 = (uint8)((min + max) / 2);
-    X = T0;
-    A1 = A2 = T0;
-    for(y = 0; X != T0 && y < 200;  y ++)                   // iterative split
+    /* A small saturated reflection must not set the global threshold.
+       Exclude complete bright histogram bins within the top 1% of pixels
+       from the split calculation; keep the original image and diagnostics. */
+    split_max = max;
+    while(split_max > min && tail + pixelCount[split_max] <= trim_count)
     {
-        X   = T0;
-        lP1 = lP2 = lS1 = lS2 = 0;                          // cleared every pass
-        for (i = min; i < X; i ++)                          // step 1, not 2
+        tail += pixelCount[split_max];
+        split_max --;
+    }
+    T0 = (uint8)((min + split_max) / 2);
+    for(y = 0; y < 32; y ++)                              // always execute the first split
+    {
+        X = T0;
+        lP1 = lP2 = lS1 = lS2 = 0;
+        for(i = min; i <= X; i ++)
         {
             lP1 += (int32)pixelCount[i] * i;
             lS1 += pixelCount[i];
         }
-        A1 = (lS1 > 0) ? (uint8)(lP1 / lS1) : T0;
-        for (i = X + 1; i <= max; i ++)
+        for(i = X + 1; i <= split_max; i ++)
         {
             lP2 += (int32)pixelCount[i] * i;
             lS2 += pixelCount[i];
         }
-        A2 = (lS2 > 0) ? (uint8)(lP2 / lS2) : T0;
-        T0 = (uint8)((A1 + A2) / 2);
+        if(lS1 == 0 || lS2 == 0) break;
+        A1 = (uint8)(lP1 / lS1);
+        A2 = (uint8)(lP2 / lS2);
+        T0 = (uint8)(((uint16)A1 + A2) / 2);
+        if(T0 == X) break;
     }
 
     T0 = (uint8)(T0 * ((zyuzhi + Differ_light) / 100.0));   // keep original tuning factor

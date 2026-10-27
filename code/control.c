@@ -25,6 +25,7 @@
 #define STEER_TARGET_STEP     (1)     /* Max target movement per 5 ms control tick. */
 #define STEER_START_TICKS     (200)   /* 1 second, timed by the steering ISR. */
 #define CONE_CONFIRM_FRAMES   (3)
+#define CONE_ARM_CM           (100)  /* First course cones are at least 2 m from start. */
 #define VISION_STALE_TICKS    (40)    /* 200 ms without a processed frame. */
 #define TRACK_LOSS_TICKS      (40)    /* 200 ms without a usable lane. */
 #define TOF_FRESH_TICKS       (40)
@@ -169,7 +170,7 @@ uint16   steer_guard_bits = 0;
 uint16 vision_age_ticks = 0, track_bad_ticks = 0;
 uint8 steer_look_row = 22;
 uint16 steer_lane_left = 0, steer_lane_right = 0;
-uint8 drive_inhibit = 0;
+uint8 drive_inhibit = 0, drive_inhibit_reason = 0;
 double run_distance_cm = 0;  /* Nominal physical distance; legacy Run_Odo is preserved. */
 uint16 mk_stop_elapsed_ms = 0, mk_clear_remaining_mm = 500;
 uint8 mk_finish_reason = 0;
@@ -236,6 +237,16 @@ void S3010_Control(void)
     static uint16 start_ticks = 0;
     static int32 lane_target = 60;
     static uint32 last_vision_frame = 0;
+#if CONE_ACT_ENABLE
+    static uint8 latched = 0;   /* 1 = 正在绕行（锁存中） */
+    static double od_start = 0; /* 变道起点的绝对里程(cm) */
+    static uint16 hold    = 0;  /* 兜底计时（5ms 一次） */
+    static uint8 done    = 0;   /* 这一组锥桶已经处理过 */
+    static uint16 clear_cnt = 0;/* 连续没看到锥桶的帧数 */
+    static uint8 confirm = 0;
+    static uint32 confirm_frame = 0;
+    static int8  dir     = 0;   /* +1 = 往右变道   -1 = 往左变道 */
+#endif
     uint8 cone_steering = 0;
     uint8 look_row = 22;
     if(Line_Count > 22 && Line_Count <= 52) look_row = (uint8)(Line_Count + 2);
@@ -281,6 +292,13 @@ void S3010_Control(void)
         Point_PID.LastError = 0;
         slalom_dir = -1;   /* [2026-10-26] 每次发车前把交错方向复位成"先往左" */
         cone_group_cnt = 0;   /* 每次发车前清零，允许重新绕两次 */
+#if CONE_ACT_ENABLE
+        latched = done = confirm = 0;
+        hold = clear_cnt = 0;
+        od_start = Run_Odo;
+        dir = 0;
+        confirm_frame = vision_processed_frames;
+#endif
         end_stopped = 0;      /* 终点停车标志复位 */
         /* [2026-10-26] 上一遍绕行把选道切走了就复位回右道；
            屏幕上调的 20~95 不动，免得覆盖手工标定。 */
@@ -418,15 +436,6 @@ void S3010_Control(void)
                  走够 CONE_LANE_CM（按里程）才结束 → 回到循迹
                锁存期间、方向不变，避免锥桶从一侧换到另一侧时反复打方向。 */
             {
-                static uint8 latched = 0;   /* 1 = 正在绕行（锁存中） */
-                static double od_start = 0; /* 变道起点的绝对里程(cm) */
-                static uint16 hold    = 0;  /* 兜底计时（5ms 一次） */
-                static uint8 done    = 0;   /* 这一组锥桶已经处理过 */
-                static uint16 clear_cnt = 0;/* 连续没看到锥桶的帧数 */
-                static uint8 confirm = 0;
-                static uint32 confirm_frame = 0;
-                static int8  dir     = 0;   /* +1 = 往右变道   -1 = 往左变道 */
-
                 /* [2026-10-24] 一组锥桶只变一次道。
                    原来用"1.5 秒冷却"，但车变道过去以后还看得见锥桶，
                    冷却一结束就又变一次，实测连续左满舵 8 次、越转越左。
@@ -438,17 +447,20 @@ void S3010_Control(void)
                 if(done && clear_cnt >= CONE_CLEAR_TICKS) done = 0;
 
                 /* Count completed vision results, not repeated 5 ms reads of one result. */
+                if(steer_guard_bits & 0x2000) confirm = 0;
                 if(confirm_frame != vision_processed_frames)
                 {
                     confirm_frame = vision_processed_frames;
-                    if(cone_ok && cone_cnt >= 2 && cone_near >= CONE_TRIG_ROW &&
+                    if(run_distance_cm >= CONE_ARM_CM && !(steer_guard_bits & 0x2000) &&
+                       cone_ok && cone_cnt >= 2 && cone_near >= CONE_TRIG_ROW &&
                        cone_x >= 6 && cone_x <= (MT9V03X_W - 6))
                     {
                         if(confirm < CONE_CONFIRM_FRAMES) confirm ++;
                     }
                     else confirm = 0;
                 }
-                if(!latched && !done && confirm >= CONE_CONFIRM_FRAMES && cone_ok && cone_cnt >= 2 &&
+                if(!latched && !done && run_distance_cm >= CONE_ARM_CM &&
+                   !(steer_guard_bits & 0x2000) && confirm >= CONE_CONFIRM_FRAMES && cone_ok && cone_cnt >= 2 &&
                    cone_x >= 6 && cone_x <= (MT9V03X_W - 6) &&      /* 贴边的 blob 是噪点 */
                    cone_near >= CONE_TRIG_ROW &&
                    cone_group_cnt < CONE_MAX_GROUPS)                /* 最多绕两组 */
@@ -897,6 +909,16 @@ void Control_Speed(void)
        boundaries while crossing, so only that known low-speed phase allows it. */
     vision_fault = (uint8)(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS ||
                           (mk_state != 3 && track_bad_ticks >= TRACK_LOSS_TICKS));
+    /* IR telemetry: waiting / final park / explicit stop / camera / lane / crosswalk. */
+    drive_inhibit_reason = 0;
+    if(!Stop_1) drive_inhibit_reason |= 0x01;
+    if(end_stopped) drive_inhibit_reason |= 0x02;
+    if(Flag_stop == 1) drive_inhibit_reason |= 0x04;
+    if(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS)
+        drive_inhibit_reason |= 0x08;
+    if(mk_state != 3 && track_bad_ticks >= TRACK_LOSS_TICKS)
+        drive_inhibit_reason |= 0x10;
+    if(MK_ACT_ENABLE && mk_state == 2) drive_inhibit_reason |= 0x20;
     drive_inhibit = (uint8)(!Stop_1 || end_stopped || Flag_stop == 1 || vision_fault ||
                            (MK_ACT_ENABLE && mk_state == 2));
 #if MOTOR_TEST_MODE == 0
