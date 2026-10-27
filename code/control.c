@@ -167,6 +167,8 @@ void Steer_Set_Mid(int16 m)
 int16    Steer_Trim = 16;      // 转向微调：中位对正后用不到，只补很小的直道偏差
 uint16   steer_guard_bits = 0;
 uint16 vision_age_ticks = 0, track_bad_ticks = 0;
+uint8 steer_look_row = 22;
+uint16 steer_lane_left = 0, steer_lane_right = 0;
 uint8 drive_inhibit = 0;
 double run_distance_cm = 0;  /* Nominal physical distance; legacy Run_Odo is preserved. */
 uint16 mk_stop_elapsed_ms = 0, mk_clear_remaining_mm = 500;
@@ -222,6 +224,9 @@ void S3010_Control(void)
     static int32 lane_target = 60;
     static uint32 last_vision_frame = 0;
     uint8 cone_steering = 0;
+    uint8 look_row = 22;
+    if(Line_Count > 22 && Line_Count <= 48) look_row = (uint8)(Line_Count + 2);
+    steer_look_row = look_row;
     if(vision_processed_frames != last_vision_frame)
     {
         last_vision_frame = vision_processed_frames;
@@ -303,20 +308,22 @@ void S3010_Control(void)
            3) 第 50 行赛道宽度不是真实车道宽度（过暗时 L=1 R=100 W=99，
               是扫描碰边界的假值，P 会被拉到 39 这种固定偏左值） */
         steer_settle = 0;
+        steer_lane_left = Left_Line[look_row];
+        steer_lane_right = Right_Line[look_row];
         steer_guard_bits = 0;
         if(steer_settle)                                  steer_guard_bits |= 0x0001;  // 刚上电在等图
         if(0 == Point)                                    steer_guard_bits |= 0x0002;  // 中线为 0
         if(Point <= 6)                                    steer_guard_bits |= 0x0004;  // 中线贴左边
         if(Point >= (MT9V03X_W - 6))                      steer_guard_bits |= 0x0008;  // 中线贴右边
-        if(Width_Real[22] < 20)                           steer_guard_bits |= 0x0010;  // 22行过窄
-        if(Width_Real[22] > 140)                          steer_guard_bits |= 0x0020;  // 22行过宽
+        if((int32)Right_Line[look_row] - (int32)Left_Line[look_row] < 20)                           steer_guard_bits |= 0x0010;  // 22行过窄
+        if((int32)Right_Line[look_row] - (int32)Left_Line[look_row] > 140)                          steer_guard_bits |= 0x0020;  // 22行过宽
         if(Width_Real[14] < 20)                           steer_guard_bits |= 0x0040;  // 14行过窄
         if(Width_Real[14] > 140)                          steer_guard_bits |= 0x0080;  // 14行过宽
-        if(Left_Line[22] <= 2)                            steer_guard_bits |= 0x0100;  // 22行左边撞墙
-        if(Right_Line[22] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0200;  // 22行右边撞墙
+        if(Left_Line[look_row] <= 2)                            steer_guard_bits |= 0x0100;  // 22行左边撞墙
+        if(Right_Line[look_row] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0200;  // 22行右边撞墙
         if(Left_Line[14] <= 2)                            steer_guard_bits |= 0x0400;  // 14行左边撞墙
         if(Right_Line[14] >= (MT9V03X_W - 3))             steer_guard_bits |= 0x0800;  // 14行右边撞墙
-        if(Line_Count < 0 || Line_Count > 22)             steer_guard_bits |= 0x1000;
+        if(Line_Count < 0 || Line_Count > 48)             steer_guard_bits |= 0x1000;
         if(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS)
             steer_guard_bits |= 0x2000;
         /* ★宽度归一化 + 单边补线（2026-10-24）
@@ -326,9 +333,9 @@ void S3010_Control(void)
            w >  70：扫到了整条路    → lane_k<=50 取左道中心，>50 取右道中心
            只有单边线时，用学到的单道宽往缺失那侧推半个道宽。 */
         {
-            uint8 l_ok = (Left_Line[22] > 6) && (Left_Line[22] < (MT9V03X_W - 3));
-            uint8 r_ok = (Right_Line[22] > 6) && (Right_Line[22] < (MT9V03X_W - 3));
-            int32 w    = (int32)Right_Line[22] - (int32)Left_Line[22];
+            uint8 l_ok = (Left_Line[look_row] > 6) && (Left_Line[look_row] < (MT9V03X_W - 3));
+            uint8 r_ok = (Right_Line[look_row] > 6) && (Right_Line[look_row] < (MT9V03X_W - 3));
+            int32 w    = (int32)Right_Line[look_row] - (int32)Left_Line[look_row];
             int32 pt   = -1;
             static int32 lane_w_ema = 0;      /* ★只学"一条道"的宽度，不会被整条路污染 */
 
@@ -336,7 +343,7 @@ void S3010_Control(void)
                distinguish one lane from two lanes in a clipped perspective image. */
             if(l_ok && r_ok && w > 20)
             {
-                pt = (int32)Left_Line[22] + w / 2;
+                pt = (int32)Left_Line[look_row] + w / 2;
                 if(!(steer_guard_bits & (0x1000 | 0x2000)) && w >= 30 && w <= 110)
                     lane_w_ema = (0 == lane_w_ema) ? w : ((lane_w_ema * 7 + w) / 8);
             }
@@ -349,10 +356,10 @@ void S3010_Control(void)
                    左边线必须在画面左 3/4 内、右边线必须在右 3/4 内才算数。 */
                 /* One visible edge does not identify the outer edge of both lanes.
                    Reconstruct only half of one lane; never request an extra lane change. */
-                if(l_ok && Left_Line[22] < (MT9V03X_W * 3 / 4))
-                    pt = (int32)Left_Line[22]  + (lw / 2);
-                else if(r_ok && Right_Line[22] > (MT9V03X_W / 4))
-                    pt = (int32)Right_Line[22] - (lw / 2);
+                if(l_ok && Left_Line[look_row] < (MT9V03X_W * 3 / 4))
+                    pt = (int32)Left_Line[look_row]  + (lw / 2);
+                else if(r_ok && Right_Line[look_row] > (MT9V03X_W / 4))
+                    pt = (int32)Right_Line[look_row] - (lw / 2);
 
                 /* [2026-10-24] 限幅：实测出现过 TP=134（画面只有 0~119）。
                    lw*3/2 在 L 靠右的时候会推到画面外，舵机从满左直接甩到满右。 */

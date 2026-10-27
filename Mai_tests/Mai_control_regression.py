@@ -59,7 +59,8 @@ int32 SD5_Duty,steer_target,steer_raw_target,LMotorSpeed,RMotorSpeed,LSpeedPWM,R
 int16 Rcount,Lcount,Rrealspeed,Lrealspeed,Fictitious_Beeline_Num;
 double Distance,Distance_Test,Run_Odo; float Mid_Ka,Mid_Kb;
 volatile uint32 isr_tick_5ms,vision_processed_frames,tof_sample_tick;
-uint16 vision_age_ticks,track_bad_ticks,mk_stop_elapsed_ms,mk_clear_remaining_mm;
+uint16 vision_age_ticks,track_bad_ticks,mk_stop_elapsed_ms,mk_clear_remaining_mm,steer_lane_left,steer_lane_right;
+uint8 steer_look_row;
 uint8 drive_inhibit,mk_finish_reason,mk_near_white,tof_has_sample;
 uint16 tof_sample_mm;double run_distance_cm;
 #define MT9V03X_W 120
@@ -167,6 +168,17 @@ int main(int argc,char **argv){check(argc==2,"scenario required");
  else if(!strcmp(argv[1],"corridor")){
   lane(20,96);Point=56;start();S3010_Control();check(steer_raw_target==58 && steer_target<=60,"76 pixel current lane is centered, not shifted to 77");
  }
+ else if(!strcmp(argv[1],"near_lane")){
+  lane(28,102);start();
+  for(int lc=23;lc<=48;lc++){
+   Line_Count=lc;Left_Line[22]=Right_Line[22]=0;
+   Left_Line[lc+2]=28;Right_Line[lc+2]=102;Width_Real[lc+2]=74;
+   for(int t=0;t<60;t++){vision_processed_frames++;S3010_Control();Control_Speed();}
+   check(steer_look_row==lc+2 && steer_mode==2 && !drive_inhibit,"fresh near lane avoids false line-loss stop");
+  }
+  Line_Count=59;for(int t=0;t<TRACK_LOSS_TICKS;t++){vision_processed_frames++;S3010_Control();}
+  Control_Speed();check(steer_mode==4 && drive_inhibit,"truly insufficient scan still stops");
+ }
  else if(!strcmp(argv[1],"vision")){
   lane(38,82);start();vision_processed_frames=0;
   for(int i=0;i<1200;i++){Control_Speed();}check(drive_inhibit && LMotorSpeed==0,"no processed image cannot accelerate");
@@ -260,7 +272,7 @@ def main():
             subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror=format", "-Werror=implicit-function-declaration", "-I", str(ROOT / "code"), f"-DMK_FINAL_STOP={final}", f"-DMK_ACT_ENABLE={actions}", f"-DCONE_ACT_ENABLE={cone}", str(source), "-lm", "-o", str(executable)], check=True)
             cases = ["crosswalk"]
             if final and actions:
-                cases += ["straight", "cone", "fit", "distance", "corridor", "vision", "tof_odo", "cross_limit", "near_band"]
+                cases += ["straight", "cone", "fit", "distance", "corridor", "near_lane", "vision", "tof_odo", "cross_limit", "near_band"]
                 if cone:
                     cases.append("perception")
                 if replay:
