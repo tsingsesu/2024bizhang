@@ -21,13 +21,36 @@
    中间，抖动一下就在两种算法之间切换，目标点单次最大跳 92px。
    所以 >85 才进"整条路"，<60 才回"单道"，中间保持上一次的状态。 */
 #define STEER_WIDE_ON        (85)    /* 超过它 → 认为扫到了整条路 */
-#define STEER_STRAIGHT_RANGE  (10)    /* Normal following: bounded correction, not a lane change. */
-#define STEER_TARGET_STEP     (1)     /* Max target movement per 5 ms control tick. */
+#define STEER_STRAIGHT_RANGE   (45)   /* [2026-10-28] 10->45: 10 只够直道调试, 弯道转不够直接冲出跑道 */
+/* [2026-10-28] 过横道时的方向补偿（占空比单位）：正 = 往左（duty 变大），负 = 往右。
+   实测过横道时中位 933 走 1.2 米右偏 12~15cm（约 7°），先补 16。
+   注意这个宏必须定义在 S3010_Control 之前，否则 E272 undeclared identifier。 */
+#define MK_CROSS_TRIM         (0)   /* [2026-10-31] 16->10->0：现场日志过横道时 L=43/R=117（车道中心在 x=80，画面中心 60），说明车已经偏左，固定左偏只会更偏 */
+/* [2026-10-31] 过横道用的"远处那条白线"。行号越小越远（0 是画面最上方），默认 14 行，
+   现场看那条白线更远就改小（10/8/5），更近就改大（18）。
+   这两条边线要同时落在画面内、宽度在 [MIN, MAX] 才采信，否则退回固定中位。 */
+#define MK_XING_ROW           (14)
+#define MK_XING_W_MIN         (35)    /* 正常一条车道约 76px，40~110 都可信 */
+#define MK_XING_W_MAX         (110)
+#define MK_XING_GAIN          (20)    /* 偏差 1px 给 2 个 duty（20/10），越大打舵越狠 */
+#define MK_XING_DUTY          (30)    /* 纠偏最多补多少 duty（满舵 ±70）*/
+
+/* [2026-10-31] ToF 转向：过横道/终点段，ToF 测到前方够近就把目标点偏一点。
+   EN 默认 0 —— 现在 ToF 照的是地面（有效读数只有 26~154mm），先装好、
+   确认日志里 TOF 行的 max 能稳定到 1000 以上，再把 EN 改成 1。 */
+#define MK_TOF_TURN_EN        (0)     /* 0 = 关，1 = 开 */
+#define MK_TOF_MIN_MM         (200)   /* 近于这个当噪音/地面，忽略 */
+#define MK_TOF_TURN_MM        (600)   /* 前方近于这个距离就补转向 */
+#define MK_TOF_FRESH_MS       (200)   /* 读数超过这么久没更新就作废 */
+#define MK_TOF_TURN_PX        (12)    /* 目标点最大偏移(px)：>0 往右打，<0 往左打 */
+#define MK_TOF_PX_GAIN        (6)     /* 每近 100mm 加多少 px（600->500 加 6px）*/
+#define STEER_TARGET_STEP      (2)    /* [2026-10-28] 1->2: 每 5ms 2px, 目标点 60->105 约 110ms */
 #define STEER_START_TICKS     (200)   /* 1 second, timed by the steering ISR. */
 #define CONE_CONFIRM_FRAMES   (3)
 #define CONE_ARM_CM           (100)  /* First course cones are at least 2 m from start. */
+#define CONE_MAX_CM           (780)  /* [2026-10-28] 绕障只在前 6 米内触发。实测两组锥桶都在 1.9~4.2 米；10 米那次 CN=9/cone_near=55/GP=4/87/22 是斑马线白条，被当成锥桶组，会让车在横道前先往右甩。0 = 关闭。 */
 #define VISION_STALE_TICKS    (40)    /* 200 ms without a processed frame. */
-#define TRACK_LOSS_TICKS      (40)    /* 200 ms without a usable lane. */
+#define TRACK_LOSS_TICKS       (400)  /* [2026-10-28] 40->400: 200ms 就停车, 分道线断口一路停; 改 2 秒 */
 #define TOF_FRESH_TICKS       (40)
 #define STEER_WIDE_OFF       (60)    /* 低于它 → 认为只是一条道     */
 
@@ -69,7 +92,7 @@ int16 lane_k = 75;   // ★选道：<=50 = 左道中心，>50 = 右道中心
    在 Control_Speed() 末尾统一乘一遍，这样所有档位一起变慢，不用一个个改。
    注意：这个只改「目标速度」；只要编码器反馈还是 0（轮子不转），PID 照样会顶到 8000。
         想让电机真的不动，用上面的 MOTOR_TEST_MODE = 1。 */
-#define SPEED_PERCENT               (12)   /* [2026-10-21] 10 -> 12：目标速度 21 -> 25，先快一点点 */
+#define SPEED_PERCENT               (14)   /* [2026-10-28] 26->20：0.5m/s 时循迹（L=1 单边补线）抖得厉害，降到约 0.42m/s，仍高于龟行车 0.3m/s */
                                                  //   跑熟了再往上加：25 -> 52，50 -> 105
        /****************************    舵机控制变量    ****************************/
 uint8    Point_Mid = MT9V03X_W/2;
@@ -112,11 +135,11 @@ int32    SD5_Duty =  SteerMiddle;
 #define STEER_DUTY_RANGE            (70)
 
 /* ★锥形标绕行参数（2026-10-24）：看到锥桶就变道并锁存，不再打一下就回正 */
-#define CONE_LANE_CM        (170)  /* [2026-10-26] 变道要走够的里程(cm)，改成按里程算。
+#define CONE_LANE_CM        (107)  /* [2026-10-26] 变道要走够的里程(cm)，改成按里程算。
                                       原来固定 1.0 秒：实测车速约 140cm/秒，全速时正好走 140cm；
                                       遇菱形减速到 50% 后 1 秒只走 70cm，横移量砍半 -> 撞锥桶。
                                       现在按里程，速度怎么变横移量都一样。调大=转得更狠，140~180 之间试。 */
-#define CONE_RETURN_TAPER_FROM (80) /* Legacy O units: soften only the second return maneuver. */
+#define CONE_RETURN_TAPER_FROM (85)  /* [2026-10-28] 120->90: 第二次绕障冲过右边界（V38 实测绕完 R 从 110 退到 48），提前收舵、少转一点。 */
 #define CONE_HOLD_MAXTICKS  (800)  /* 兜底 4 秒：打滑/编码器不动时强制退出，别一直满舵 */
 #define CONE_CLEAR_TICKS    (200)  /* 5ms × 200 = 1 秒看不见锥桶，才算这一组过完 */
 #define CONE_COOL_TICKS     (300)  /* 5ms × 300 = 1.5 秒冷却；第二组锥桶间隔 2~4 米，够触发 */
@@ -182,6 +205,7 @@ extern volatile uint8 tof_has_sample;
 uint8    steer_mode = 0;      /* 0 waiting, 1 settling, 2 lane, 3 cone, 4 invalid, 5 parked */
 int32 steer_normal_target = -1;
 uint8 cone_turn_percent = 0;
+uint8 cone_active = 0;        /* [2026-10-31] 正在绕障：这期间不要被白漆兜底抢走转向 */
 int32    steer_raw_target = -1;
 int32    steer_target = -1;    // 本次计算出的目标点（诊断用）   // ★诊断：保护条件位掩码，0=PID正在跑
 uint8    showpoint[2] = {0};
@@ -299,6 +323,7 @@ void S3010_Control(void)
         cone_group_cnt = 0;   /* 每次发车前清零，允许重新绕两次 */
 #if CONE_ACT_ENABLE
         latched = done = confirm = 0;
+        cone_active = 0;   /* [2026-10-31] 发车前清掉 */
         hold = clear_cnt = 0;
         od_start = Run_Odo;
         dir = 0;
@@ -330,17 +355,87 @@ void S3010_Control(void)
         steer_raw_target = steer_target;
         SD5_Duty = range_protect(Steer_Mid + Steer_Trim, Pwm_Min, Pwm_Max);
     }
-    else if(end_stopped || (MK_ACT_ENABLE && mk_state == 2) || start_ticks < STEER_START_TICKS)
+    /* [2026-10-28] mk_state==3（低速过横道）也进这个分支：斑马线白漆会把左右边线
+       全扫塌（实测 W 只剩 29~37，真车道 76），再循迹就是满舵乱打。这里直接走直。 */
+    else if(end_stopped || (MK_ACT_ENABLE && mk_state == 2) ||
+            (MK_ACT_ENABLE && mk_state == 3) ||
+            (MK_ACT_ENABLE && mk_dia_seen) ||   /* [2026-10-31] 压菱形时白漆把边线扫塌，强制走直 */
+            /* [2026-10-31] 白漆兜底：两条边线都在画面内、但宽度塌到 30px 以下
+               （正常约 76），说明正压在菱形/横道白漆上，此时循迹不可信。 */
+            (MK_ACT_ENABLE && !cone_active && Left_Line[22] > 6 && Right_Line[22] < (MT9V03X_W - 3) &&
+             Width_Real[22] > 0 && Width_Real[22] < 30) ||
+            start_ticks < STEER_START_TICKS)
     {
-        if(!end_stopped && !(MK_ACT_ENABLE && mk_state == 2)) start_ticks ++;
+        if(!end_stopped && !(MK_ACT_ENABLE && (mk_state == 2 || mk_state == 3))) start_ticks ++;
         track_bad_ticks = 0;
-        steer_mode = end_stopped ? 5 : ((MK_ACT_ENABLE && mk_state == 2) ? 6 : 1);
+        steer_mode = end_stopped ? 5 :
+                     ((MK_ACT_ENABLE && mk_state == 3) ? 7 :
+                      ((MK_ACT_ENABLE && mk_state == 2) ? 6 : 1));
         steer_settle = (uint8)(steer_mode == 1);
         steer_guard_bits = end_stopped ? 0 : 0x0001;
         steer_raw_target = steer_target = Point_Mid;
         lane_target = Point_Mid;
         Point_PID.LastError = 0;
-        SD5_Duty = range_protect(Steer_Mid + Steer_Trim, Pwm_Min, Pwm_Max);
+        /* [2026-10-28] 过横道时中位差一点就会长距离跑偏，单独补一个量 */
+        SD5_Duty = range_protect(Steer_Mid + Steer_Trim +
+                               ((MK_ACT_ENABLE && mk_state == 3) ? MK_CROSS_TRIM : 0),
+                               Pwm_Min, Pwm_Max);
+
+        /* [2026-10-31] 过横道不再死打死中位：远处（MK_XING_ROW 行）如果还有一对
+           可信边线，就用它的中点当目标点，让 PID 把车拉回车道中心。
+           白漆只把近处扫塌，终点后那条白线是干净的。
+           门限不满足就还是上面的固定中位 + MK_CROSS_TRIM。 */
+        if(MK_ACT_ENABLE && mk_state == 3 && !end_stopped)
+        {
+            int32 l14 = (int32)Left_Line[MK_XING_ROW];
+            int32 r14 = (int32)Right_Line[MK_XING_ROW];
+            int32 w14 = r14 - l14;
+            int32 pt2 = -1;
+
+            /* ① 远处那条白线可信 -> 用它的中点 */
+            if(l14 > 6 && r14 < (MT9V03X_W - 3) &&
+               w14 >= MK_XING_W_MIN && w14 <= MK_XING_W_MAX)
+                pt2 = l14 + w14 / 2;
+
+            /* ② ToF 转向：必须要有新鲜读数，而且要比 MK_TOF_MIN_MM 远。
+               现在这种照地面的 120~150mm 会被 MK_TOF_MIN_MM 挡掉，
+               否则车会一直以为前方有东西，一路偏下去。 */
+            if(MK_TOF_TURN_EN)
+            {
+                uint16 td = Tof_Get_Distance();
+                if(Tof_Get_Age_Ms() <= MK_TOF_FRESH_MS &&
+                   td >= MK_TOF_MIN_MM && td < MK_TOF_TURN_MM)
+                {
+                    int32 off, cap;
+                    if(pt2 < 0) pt2 = Point_Mid;
+                    /* 按距离线性加力：越近打得越多；MK_TOF_TURN_PX 的符号决定往哪边 */
+                    cap = (MK_TOF_TURN_PX >= 0) ? MK_TOF_TURN_PX : -MK_TOF_TURN_PX;
+                    off = (int32)(MK_TOF_TURN_MM - td) * MK_TOF_PX_GAIN / 100;
+                    if(off > cap) off = cap;
+                    if(MK_TOF_TURN_PX < 0) off = -off;
+                    pt2 += off;
+                }
+            }
+
+            if(pt2 >= 0)
+            {
+                int32 duty, off2;
+                if(pt2 < 5)               pt2 = 5;
+                if(pt2 > (MT9V03X_W - 5)) pt2 = MT9V03X_W - 5;
+                steer_raw_target = steer_target = pt2;
+                lane_target = pt2;
+
+                /* [2026-10-31] 不走 PID，直接按偏差给舵量：
+                   pt2 偏右 -> off2 为负 -> duty 减小 -> 往右打；
+                   pt2 一回到中心，off2 立刻归零 —— 转完马上能回正，
+                   不会像 PID 那样拖着走一段。 */
+                off2 = ((int32)Point_Mid - pt2) * MK_XING_GAIN / 10;
+                if(off2 >  MK_XING_DUTY) off2 =  MK_XING_DUTY;
+                if(off2 < -MK_XING_DUTY) off2 = -MK_XING_DUTY;
+                SD5_Duty = range_protect(Steer_Mid + Steer_Trim + MK_CROSS_TRIM + off2,
+                                         Pwm_Min, Pwm_Max);
+            }
+        }
     }
 #if STEER_LANE_FOLLOW
     /* [2026-10-20] lane following wins over the competition state machine */
@@ -391,10 +486,18 @@ void S3010_Control(void)
 
             /* The nearest bounding pair is the current corridor. Width alone cannot
                distinguish one lane from two lanes in a clipped perspective image. */
-            if(l_ok && r_ok && w > 20)
+            /* [2026-10-28] 宽度合理性：一条道实测约 76px（lane_w_ema 学出来也是这个量级）。
+               左边线出画时（L=1），扫描会配到一对假边界，宽度只剩 47 这类值，
+               算出的中心偏 20px 以上，而 PID 增益 0.2x|e| -> 直接满舵甩出去
+               （V38 日志 T=88：L=1 R=48 W=47 -> TP=30 -> d=987）。
+               宽度不到已知道宽的 2/3 就整帧不信，沿用上一个可信目标点。 */
+            if(l_ok && r_ok && w > 20 &&
+               !(lane_w_ema > 20 && w * 3 < lane_w_ema * 2))
             {
                 pt = (int32)Left_Line[look_row] + w / 2;
-                if(!(steer_guard_bits & (0x1000 | 0x2000)) && w >= 30 && w <= 110)
+                /* 只让「和已有估计差不远」的宽度进 EMA，别被假配对带偏 */
+                if(!(steer_guard_bits & (0x1000 | 0x2000)) && w >= 30 && w <= 110 &&
+                   (lane_w_ema <= 20 || (w * 3 >= lane_w_ema * 2 && w * 4 <= lane_w_ema * 5)))
                     lane_w_ema = (0 == lane_w_ema) ? w : ((lane_w_ema * 7 + w) / 8);
             }
             else
@@ -413,6 +516,13 @@ void S3010_Control(void)
 
                 /* [2026-10-24] 限幅：实测出现过 TP=134（画面只有 0~119）。
                    lw*3/2 在 L 靠右的时候会推到画面外，舵机从满左直接甩到满右。 */
+                /* [2026-10-30] 单边线分支也要查宽度：左右边界都塌到一起时
+                   （10-30 日志 T=40 DC=876: L=1 R=52 W=51，真实约 90），
+                   这一帧的边界是假的；此时 pt 置 -1 判不可信，沿用上一帧目标，
+                   否则会按假的右边界算目标点 -> TP=38 -> 满舵左打 d=987。 */
+                if(pt >= 0 && lane_w_ema > 20 && w * 3 < lane_w_ema * 2)
+                    pt = -1;
+
                 if(pt >= 0)
                 {
                     /* ★锥桶区里收得更紧（±25）：锥桶把边线挡断时单边补线会算出极端值，
@@ -469,7 +579,8 @@ void S3010_Control(void)
                    !(steer_guard_bits & 0x2000) && confirm >= CONE_CONFIRM_FRAMES && cone_ok && cone_cnt >= 2 &&
                    cone_x >= 6 && cone_x <= (MT9V03X_W - 6) &&      /* 贴边的 blob 是噪点 */
                    cone_near >= CONE_TRIG_ROW &&
-                   cone_group_cnt < CONE_MAX_GROUPS)                /* 最多绕两组 */
+                   cone_group_cnt < CONE_MAX_GROUPS &&            /* 最多绕两组 */
+                   (CONE_MAX_CM == 0 || run_distance_cm <= (double)CONE_MAX_CM))   /* 只在前段触发 */
                 {
                     /* [2026-10-26] 方向完全按交错顺序走，不再看锥桶在画面偏左还是偏右。
                        原来「锥桶偏右就往左」那条规则会覆盖交错：实测第一排往左、
@@ -543,21 +654,29 @@ void S3010_Control(void)
                         Point_PID.LastError = 0;
                     }
                 }
+                cone_active = (uint8)latched;   /* [2026-10-31] 给 S3010_Control 看 */
             }
             #endif
 
-            /* Invalid images must not preserve a previous cornering command for 2 seconds.
-               Confirmed cone maneuvers are handled separately from normal straight following. */
+            /* [2026-10-28] 坏帧处理改回 V23 的「保持上一个可信目标点」。
+               之前任何一帧不可信就直接把 lane_target 拽回 60：
+               分道线断口这种正常现象会让车不停回正 -> 弯道里转不够 ->
+               冲出跑道；同时 track_bad_ticks 200ms 就停车 -> 跑一路停一路。
+               现在：坏帧只是「这一帧不更新目标」，保持上一次的可信值；
+               只有连续 TRACK_LOSS_TICKS 都不可信才回中位（并停车）。 */
             steer_raw_target = pt;
+                /* [2026-10-28] 横道白条会把左边界顶歪，实测 TP 会往右偏十几像素。既然已经确认看到横道（或眼前就是白条），就直接按中线走，别在斑马线上打方向。 */
+                if(MK_ACT_ENABLE && mk_state < 2 && !cone_steering && (mk_cw_seen || mk_near_white) && pt >= 0)
+                    pt = Point_Mid;
             if(!cone_steering)
             {
                 uint8 bad = (uint8)(pt < 0 ||
                     (steer_guard_bits & (0x1000 | 0x2000 | 0x0010 | 0x0020)));
                 if(bad)
                 {
-                    lane_target = Point_Mid;
-                    Point_PID.LastError = 0;
                     if(track_bad_ticks < 60000) track_bad_ticks ++;
+                    if(track_bad_ticks >= TRACK_LOSS_TICKS)
+                        lane_target = Point_Mid;   /* 真丢了才回中 */
                     steer_mode = 4;
                 }
                 else
@@ -761,13 +880,16 @@ void Motor_Control(void)
 *
 */
 /* [2026-10-22] 把 2026 标线常量放到函数外，避免在函数中间写 #define 污染后续代码。 */
-#define MK_DIA_SPEED_PCT    (50)      // 菱形处速度 = 原速的 50%
+#define MK_DIA_SPEED_PCT    (70)      // [2026-10-28] 50->70: 两个菱形之间减速太狠，规则只要求「减速」
 #define MK_DIA_CONFIRM       (8)       /* Distinct completed camera frames. */
+#define MK_DIA_CM           (850)     /* [2026-10-31] 菱形视觉始终没检测到（DI 恒为 0），用车程兜底保一次减速；0 = 关闭。 */
 #define MK_CW_CONFIRM        (15)      /* Crosswalk pattern persists across completed frames. */
 #define MK_CW_NEAR_CONFIRM    (3)      /* Near position also needs independent confirmation. */
-#define MK_STOP_ROW                 (45)     // 横道要到这一行以后才停（行号越大越近车头）
+#define MK_STOP_ROW                 (40)     // [2026-10-28] 45->40: 实测 near 最大只有 44, 45 永远够不到 -> 横道不停
 #define MK_STOP_TICKS       (1000)    // 停车 5 秒（5ms * 1000）
-#define MK_CROSS_SPEED      (10)      /* Encoder counts per 5 ms, before the normal ramp. */
+#define MK_CROSS_CM         (1120)   /* [2026-10-28] 改回视觉为主，这个只做兜底：条纹判据万一还是没认出来，走到这里强制停，别冲过终点（终点墙实测 1174）。0 = 关闭。 */
+#define MK_CW_MIN_CM        (800)    /* [2026-10-28] 横道只可能在赛道后段，前段不认 */
+#define MK_CROSS_SPEED      (22)      /* [2026-10-28] 10->18: 停 5 秒后重新起步太慢 */
 #define MK_CLEAR_CM         (50)      /* Camera-to-rear ~30 cm + requested margin ~20 cm. */
 #define MK_CROSS_LIMIT_CM   (150)     /* Bound travel if stripe tracking never clears. */
 #define MK_STILL_COUNTS     (2)
@@ -810,6 +932,7 @@ void Control_Speed(void)
     static uint16 ramp_cnt = 0, mk_stop_cnt = 0;
     static int32 out_L = 0, out_R = 0;
     static uint8 mk_dia_run = 0, mk_cw_run = 0, mk_cw_near_run = 0, cross_near_seen = 0;
+    static uint8 mk_dia_cnt = 0, mk_dia_latch = 0;   /* [2026-10-28] 第几个菱形 */
     static uint32 cross_frame = 0, marker_frame = 0;
     static double cross_start_cm = 0, last_white_cm = 0;
     uint8 vision_fault;
@@ -827,6 +950,7 @@ void Control_Speed(void)
         mk_state = 0;
         mk_stop_cnt = 0;
         mk_dia_run = mk_cw_run = mk_cw_near_run = cross_near_seen = 0;
+        mk_dia_cnt = mk_dia_latch = 0;
         marker_frame = vision_processed_frames;
         mk_stop_elapsed_ms = mk_finish_reason = 0;
         mk_clear_remaining_mm = MK_CLEAR_CM * 10;
@@ -837,24 +961,56 @@ void Control_Speed(void)
         {
             marker_frame = vision_processed_frames;
             if(mk_dia_seen) { if(mk_dia_run < 255) mk_dia_run ++; } else mk_dia_run = 0;
-            if(mk_cw_seen) { if(mk_cw_run < 255) mk_cw_run ++; } else mk_cw_run = 0;
+            if(mk_cw_seen) { if(mk_cw_run < 255) mk_cw_run ++; }
+            else if(mk_cw_run) mk_cw_run --;   /* [2026-10-28] 丢一帧不清零, 否则检测稍微抖一下永远到不了 15 */
             if(mk_cw_seen && mk_cw_near >= MK_STOP_ROW)
             { if(mk_cw_near_run < 255) mk_cw_near_run ++; }
-            else mk_cw_near_run = 0;
+            else if(mk_cw_near_run) mk_cw_near_run --;   /* [2026-10-28] 同上 */
         }
         if(!vision_processed_frames || vision_age_ticks >= VISION_STALE_TICKS)
             mk_dia_run = mk_cw_run = mk_cw_near_run = 0;
 
+        /* [2026-10-28] 数菱形：第 1 个进减速，第 2 个之后恢复原速。
+           锁存保证一个菱形只计一次（它从画面消失时 mk_dia_run 归零）。 */
+        if(!mk_dia_seen) mk_dia_latch = 0;
+        else if(mk_dia_run >= MK_DIA_CONFIRM && !mk_dia_latch)
+        {
+            mk_dia_latch = 1;
+            if(mk_dia_cnt < 9) mk_dia_cnt ++;
+        }
+
         if(mk_state == 0 || mk_state == 1)
         {
             if(mk_cw_run >= MK_CW_CONFIRM && mk_cw_near_run >= MK_CW_NEAR_CONFIRM &&
-               mk_cw_seen && mk_cw_near >= MK_STOP_ROW)
+               mk_cw_seen && mk_cw_near >= MK_STOP_ROW && run_distance_cm >= MK_CW_MIN_CM)
             {
                 mk_state = 2;
                 mk_stop_cnt = 0;
                 mk_stop_elapsed_ms = 0;
             }
-            else if(mk_state == 0 && mk_dia_run >= MK_DIA_CONFIRM)
+            /* [2026-10-28] 里程兜底：横道识别不出来时，按固定赛道里程停。 */
+            else if(MK_CROSS_CM > 0 && run_distance_cm >= (double)MK_CROSS_CM)
+            {
+                mk_state = 2;
+                mk_stop_cnt = 0;
+                mk_stop_elapsed_ms = 0;
+            }
+            /* [2026-10-28] 第二个菱形过了 -> 退出减速，恢复原速。
+               放在「进减速」之前：mk_dia_cnt 已经 >=2 时就不再进 state 1。 */
+            else if(mk_state == 1 && mk_dia_cnt >= 2)
+            {
+                mk_state = 0;
+                Distance = 0;
+                Distance_ON = 0;
+            }
+            else if(mk_state == 0 && mk_dia_cnt == 1 && mk_dia_run >= MK_DIA_CONFIRM)
+            {
+                mk_state = 1;
+                Distance = 0;
+                Distance_ON = 1;
+            }
+            /* [2026-10-31] 菱形视觉全程没检出，用里程兜底进一次减速（只进一次）。 */
+            else if(mk_state == 0 && MK_DIA_CM > 0 && run_distance_cm >= (double)MK_DIA_CM)
             {
                 mk_state = 1;
                 Distance = 0;
@@ -949,7 +1105,9 @@ void Control_Speed(void)
         out_L = out_R = 0;
         ramp_cnt = 0;
     }
-    else if(++ ramp_cnt >= MOTOR_RAMP_TICKS)
+        /* [2026-10-28] 过横道那段软启动快 5 倍：0->18 从 3.6 秒缩到 0.7 秒 */
+        else if(++ ramp_cnt >= ((MK_ACT_ENABLE && mk_state == 3) ? (MOTOR_RAMP_TICKS / 5)
+                                                  : MOTOR_RAMP_TICKS))
     {
         ramp_cnt = 0;
         if(out_L < LMotorSpeed) out_L ++; else if(out_L > LMotorSpeed) out_L --;
@@ -1054,7 +1212,7 @@ int16 Fictitious_Beeline(float Ka, float Kb)
    接线（实测确认，不是按位置顺序排的，别搞反）：
        P02_4 = 左前转向      P02_5 = 右前转向
        P02_6 = 左后转向      P02_7 = 右后转向
-       P20_11 = 左后刹灯     P00_8 = 右后刹灯
+       P20_11 = 左后刹灯     P20_12 = 右后刹灯
        P20_13 = 左前大灯     P20_14 = 右前大灯   ← 大灯还没接，引脚待确认
    规则要求「同侧前后转向灯同频率闪亮」，所以按【左右】成对控制：
        左 = P02_4 + P02_6      右 = P02_5 + P02_7
@@ -1079,9 +1237,8 @@ void Light(void)
         gpio_set_level(P02_7, 1);
         gpio_set_level(P20_11, 1);
         gpio_set_level(P20_12, 1);
-        gpio_set_level(P20_13, 1);
-        gpio_set_level(P20_14, 1);
-        gpio_set_level(P00_8, 1);
+        gpio_set_level(P15_7, 1);
+        gpio_set_level(P20_9, 1);
         blink_cnt = 0;
         return;
     }
@@ -1109,12 +1266,15 @@ void Light(void)
     gpio_set_level(P02_5,  (right && blink_on) ? 1 : 0);   /* 右前转向 */
     gpio_set_level(P02_7,  (right && blink_on) ? 1 : 0);   /* 右后转向 */
 
-    /* 刹灯按实际接线：[2026-10-24] 左后刹 = P20_11，右后刹 = P00_8 */
+    /* 刹灯按实际接线：[2026-10-24] 左后刹 = P20_11，右后刹 = P20_12 */
     gpio_set_level(P20_11, brake ? 1 : 0);                 /* 左后刹灯 */
-    gpio_set_level(P00_8, brake ? 1 : 0);                 /* 右后刹灯 */
+    gpio_set_level(P20_12, brake ? 1 : 0);                 /* 右后刹灯 */
 
-    /* 大灯暂时借用 P20_13 / P20_14（还没接，等你确认实际引脚再改） */
-    gpio_set_level(P20_13, 1);                             /* 左前大灯 常亮 */
-    gpio_set_level(P20_14, 1);                             /* 右前大灯 常亮 */
-    gpio_set_level(P20_12, 1);                             /* 备用 */
+    /* [2026-10-30] 前照灯 P15_7/P20_9：平时常亮（3V3 直驱） */
+    {
+        uint8 head_on = 1;
+        gpio_set_level(P15_7, head_on);                    /* 左前大灯 */
+        gpio_set_level(P20_9, head_on);                    /* 右前大灯 */
+    }
+
 }

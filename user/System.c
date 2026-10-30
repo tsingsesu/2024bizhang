@@ -63,11 +63,13 @@ void System()
     gpio_init(P02_5,  GPO, GPIO_LOW, GPO_PUSH_PULL);//右前转向  [2026-10-24 实测确认] -> P7 有刷电机2座
     gpio_init(P02_6,  GPO, GPIO_LOW, GPO_PUSH_PULL);//左后转向  [2026-10-24 实测确认] -> P7 有刷电机2座
     gpio_init(P02_7,  GPO, GPIO_LOW, GPO_PUSH_PULL);//右后转向 -> P7 有刷电机2座
-    gpio_init(P20_11, GPO, GPIO_LOW, GPO_PUSH_PULL);//左前大灯 -> P4 姿态传感器座
-    gpio_init(P20_12, GPO, GPIO_LOW, GPO_PUSH_PULL);//右前大灯 -> P4 姿态传感器座
-    gpio_init(P20_13, GPO, GPIO_LOW, GPO_PUSH_PULL);//左后刹灯 -> P4 姿态传感器座
-    gpio_init(P20_14, GPO, GPIO_LOW, GPO_PUSH_PULL);//右后刹灯 -> P4 姿态传感器座
-gpio_init(P00_8, GPO, GPIO_LOW, GPO_PUSH_PULL);//右后刹灯 [2026-10-24] P00_8
+    gpio_init(P15_7,  GPO, GPIO_LOW, GPO_PUSH_PULL);//左前大灯 [2026-10-29] 改到 P15_7，3V3 直驱
+    gpio_init(P20_9,  GPO, GPIO_LOW, GPO_PUSH_PULL);//右前大灯 [2026-10-29] 改到 P20_9，3V3 直驱
+    gpio_init(P20_11, GPO, GPIO_LOW, GPO_PUSH_PULL);//左后刹灯 -> P4 姿态传感器座
+    gpio_init(P20_12, GPO, GPIO_LOW, GPO_PUSH_PULL);//右后刹灯 [2026-10-29] 从 P00_8 改过来 -> P4 姿态传感器座
+    gpio_init(P20_13, GPO, GPIO_LOW, GPO_PUSH_PULL);//备用（原大灯位，已弃用）-> P4 姿态传感器座
+    gpio_init(P20_14, GPO, GPIO_LOW, GPO_PUSH_PULL);//备用（原大灯位，已弃用）-> P4 姿态传感器座
+gpio_init(P00_8, GPO, GPIO_LOW, GPO_PUSH_PULL);//备用 [2026-10-29] 右后刹灯已改到 P20_12
 
     // ★★开机自检闪灯（诊断用）★★
     //   4 个转向灯闪 3 下 = 程序跑到了这里（说明 DL1B/摄像头初始化全部走完，马上要开 PIT）

@@ -39,12 +39,12 @@
 /* [2026-10-22] 日志版本号放在本文件：每次要改版本就等于改本文件，
    保证这份源码一定会被重新编译。放头文件里会出现 .o 没重编、
    日志仍打印旧版本号的情况（V8 实测打印成 V6）。 */
-#define CAR_LOG_VERSION           (30)   // V30: tapered second return and crosswalk detection independent of lane edges
+#define CAR_LOG_VERSION           (59)   // V44: MK_CROSS_TRIM - steering bias while crossing the zebra (centre 933 drifts right)
 /* [2026-10-22] 发车方式
    0 = 不自动发车，只能人工放行（调试用；板上只有 S2~S5，没有 S1）
    1 = ToF 遮挡发车（当前，比赛要求非接触发车） */
-#define START_MODE                (2)      // 1=ToF非接触发车  2=调试自动发车      // ★ 1=ToF发车(比赛)  2=调试自动发车
-#define START_DEBUG_DELAY_MS      (20000)  // ★ 调试模式：上电多少毫秒后自动走
+#define START_MODE                (1)      // [2026-10-28] 只保留 ToF/DL1B 发车；上电定时的调试发车已删除
+/* #define START_DEBUG_DELAY_MS (20000)  -- [2026-10-28] 自动发车已删除，这个宏不再使用 */
 
 // ================= ★WiFi(SPI) 图传 → 逐飞助手 =================
 // 1 = 开（模块未到或没配网时请改 0，否则上电会多等几秒）
@@ -131,6 +131,10 @@ int core0_main(void)
                                      MT9V03X_W, MT9V03X_H, image_copy[0]);
 #endif
 
+/* [2026-10-31] ToF 安装调试：CPU1 统计，CPU0 打印后清零 */
+extern volatile uint16 tof_try_cnt, tof_ok_cnt, tof_win_min, tof_win_max;
+extern volatile uint16 tof_sample_mm;   /* [2026-10-31] 最后一次有效读数 */
+
     cpu_wait_event_ready();         // 等待所有核心初始化完毕
     while(TRUE)
     {
@@ -196,6 +200,23 @@ int core0_main(void)
                  (int)mk_cw_bands, (int)cone_group_cnt, (int)cone_turn_percent,
                  (long)steer_normal_target);
             wifi_spi_send_string(log_buf);
+
+            /* [2026-10-31] ToF 安装调试行，没发车时跟着日志走 4Hz，专门用来瞄准传感器。
+               ok/try = 这 250ms 里有效读数/调用次数；min/max = 有效读数范围。
+               车一旦发起来这段就不发了，不占比赛带宽。 */
+            if(Stop_1 == 0)
+            {
+                static char tof_buf[160];
+                sprintf(tof_buf, "TOF V%d ok=%d/%d min=%d max=%d live=%d last=%d age=%lu\r\n",
+                        (int)CAR_LOG_VERSION,
+                        (int)tof_ok_cnt, (int)tof_try_cnt,
+                        (int)(tof_ok_cnt ? tof_win_min : 0), (int)tof_win_max,
+                        (int)dl1b_distance_mm, (int)tof_sample_mm,
+                        (unsigned long)Tof_Get_Age_Ms());
+                wifi_spi_send_string(tof_buf);
+                tof_ok_cnt = 0; tof_try_cnt = 0;
+                tof_win_min = 0xFFFF; tof_win_max = 0;
+            }
         }
 #endif
         LuUI_Key();
@@ -214,23 +235,24 @@ int core0_main(void)
             gpio_set_level(P02_5,1);//左后转向
             gpio_set_level(P02_6,1);//右前转向
             gpio_set_level(P02_7,1);//右后转向
-            gpio_set_level(P20_11,1);//左前大灯
-            gpio_set_level(P20_12,1);//右前大灯
-            gpio_set_level(P20_13,1);//左后刹灯
-            gpio_set_level(P20_14,1);//右后刹灯
+            HEAD_SET(P15_7, 1);//左前大灯 [2026-10-29] 改用 P15_7
+            HEAD_SET(P20_9, 1);//右前大灯 [2026-10-29] 改用 P20_9
+            gpio_set_level(P20_11,1);//左后刹灯
+            gpio_set_level(P20_12,1);//右后刹灯 [2026-10-29] 改用 P20_12
 
-            /* ★调试模式：不看 ToF，上电 N 秒后直接发车 */
-            if(((1 == START_MODE) && start_trigger) ||
-               ((2 == START_MODE) && (isr_tick_5ms >= (START_DEBUG_DELAY_MS / 5))))
+            /* [2026-10-28] 发车只认 ToF / DL1B 触发。
+               原来 START_MODE=2 的「上电 20 秒自动发车」已删除，
+               调试时靠手伸到车前触发，别再把它加回来。 */
+            if(start_trigger)
             {
                 gpio_set_level(P02_4,0);//左前转向
                 gpio_set_level(P02_5,0);//左后转向
                 gpio_set_level(P02_6,0);//右前转向
                 gpio_set_level(P02_7,0);//右后转向
-                gpio_set_level(P20_11,0);//左前大灯
-                gpio_set_level(P20_12,0);//右前大灯
-                gpio_set_level(P20_13,0);//左后刹灯
-                gpio_set_level(P20_14,0);//右后刹灯
+                HEAD_SET(P15_7, 0);//左前大灯 [2026-10-29] 改用 P15_7
+                HEAD_SET(P20_9, 0);//右前大灯 [2026-10-29] 改用 P20_9
+                gpio_set_level(P20_11,0);//左后刹灯
+                gpio_set_level(P20_12,0);//右后刹灯 [2026-10-29] 改用 P20_12
                 Flag_turn=3;
                 Flag_stop=0;
                 Deal_Flag=0;

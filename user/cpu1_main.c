@@ -42,6 +42,12 @@ extern volatile uint8  stop_now, stop_latch;
 extern volatile uint16 tof_sample_mm;
 extern volatile uint32 isr_tick_5ms;
 extern volatile uint8  tof_new_sample;
+
+/* [2026-10-31] ToF 安装调试统计（必须放在 #pragma cpu1_dsram 之前，CPU0 要读）*/
+volatile uint16 tof_try_cnt = 0;    /* 调了几次 dl1b_get_distance */
+volatile uint16 tof_ok_cnt  = 0;    /* 其中返回有效距离的次数 */
+volatile uint16 tof_win_min = 0xFFFF;
+volatile uint16 tof_win_max = 0;
 #pragma section all "cpu1_dsram"
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU1的RAM中
 
@@ -75,6 +81,7 @@ void core1_main(void)
         // ★ToF 没装就不调用：否则每次都要等软件 I2C 的 ACK 超时，白白拖慢 CPU1
         if(dl1b_init_flag)
         {
+            if(tof_try_cnt < 60000) tof_try_cnt ++;
             dl1b_get_distance();
             /* ★只有这一轮真的测到新距离时才置位（finsh_flag 只成功时=1），
                然后立刻清掉，防止被下一个 8192 空轮冲掉 */
@@ -85,6 +92,9 @@ void core1_main(void)
                 tof_sample_tick = isr_tick_5ms;
                 tof_has_sample = 1;
                 tof_new_sample  = 1;
+                if(tof_ok_cnt < 60000) tof_ok_cnt ++;
+                if(dl1b_distance_mm < tof_win_min) tof_win_min = dl1b_distance_mm;
+                if(dl1b_distance_mm > tof_win_max) tof_win_max = dl1b_distance_mm;
             }
         }
         if(mt9v03x_finish_flag)

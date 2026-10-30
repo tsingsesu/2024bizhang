@@ -48,15 +48,10 @@ void Find_Rhombus_Out(uint8 *data);
 void  Find_Stop(uint8 *data);
 
 void Find_Rhombus(uint8 *data);
-void Find_Zebra(uint8 *data);
-void Find_Decelerate(uint8 *data);
-void Turn_Left(void);
 
-void Turn_Right(void);
 
 void Overtaking(void);
 void Will_car(void);
-void Decelerate(uint8 *data);
 void  Tiao_Light(uint8 *data);
 
 extern uint32 time_dl1b;
@@ -148,9 +143,7 @@ uint8 Find_J_Black(uint8 *data, uint8 j,uint8 start,uint8 end);     //2020.7.15
 uint8 Start_Line_Judg(uint8 *data);  // 斑马线判别
 uint8 intial_Start_Line_Judg(uint8 *data);
 void Garage_Add_Line(uint8 *data, uint8 mode);
-uint8 Find_Cone_bucket(uint8 *data);//辅助判别锥桶
 
-void Point_Repair_Line(uint8 Start, uint8 Stop,uint16 position_start, uint16 position_stop ,uint16 *Line_Add);
 //  俩点 补线
 
 
@@ -184,7 +177,6 @@ int32 range_protect(int32 duty, int32 min, int32 max);
 
 uint8 Ramp_Judg(uint8 *data);
 void Find_rhombus(uint8 *data);//判断拐点
-void Find_rhombus_Out(uint8 *data);
 float Right_Add_Line_Weight(int8 begin,int8 end);
 float Left_Add_Line_Weight(int8 begin,int8 end);
 float Right_Line_curvity(uint8 i,uint8 gap);
@@ -208,8 +200,6 @@ uint8 Ring_Mid_judgment(uint16 *Line, uint8 mode);
 uint8 Fork_Judg(uint8 *data,uint8 mode);
 extern uint8 Fork_judg1;
 uint8 Ring_Judg(uint8 *data);
-extern void New_boundary(uint8 *data, float *Ka, float *Kb);
-void Decelerate_2(uint8 *data);
 //记忆算法变量
 extern uint8 Ring_Count;
 extern uint8 Fork_Flag;
@@ -217,8 +207,6 @@ extern uint8 Fork_Count;
 extern uint8 Fork_res;
 extern  uint8 Ramp_Count;
 void Buzzer();
-uint8 zuobianjie(uint8 *data,uint8 Left_Min, uint8 Right_Max);
-uint8 youbianjie(uint8 *data,uint8 Left_Min, uint8 Right_Max);
 void Traversal_Mid_Line_Ling(uint8 i, uint8 *data, uint8 Mid, uint8 Left_Min, uint8 Right_Max, uint16 *Left_Line, uint16 *Right_Line, uint16 *Left_Add_Line, uint16 *Right_Add_Line);
 
 /* [2026-10-20] edge lines captured before Glare_Suppress (for page1 overlay) */

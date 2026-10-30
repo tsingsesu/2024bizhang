@@ -36,7 +36,7 @@ int8 Differ = 13;    // ★实测调好的阈值偏移（原 0）
 // ================= ★摄像头曝光 / 增益（调参界面可改） =================
 // 曝光：MT9V03X_EXP_TIME_DEF 默认 500，范围约 50~2000，越大越亮
 // 增益：MT9V034 全局增益寄存器 0x35，范围 16~64，越大越亮（噪点也越多）
-uint16 cam_exposure = 700;       /* [2026-10-26] 2400->700：换到亮场地后实测 ExpTime 700 / Gain 16，屏幕 iavg=186、imax=255 */
+uint16 cam_exposure = 80;       /* [2026-10-26] 2400->700：换到亮场地后实测 ExpTime 700 / Gain 16，屏幕 iavg=186、imax=255 */
 uint8  cam_gain     = 16;        /* [2026-10-26] 64->16：亮场地不需要增益，跟屏幕一致 */
 
 uint8 steer_mid_cal = 0;   // [2026-10-22] 1 = 舵机中位校准模式（长按 S2 切换）      // ★实测调好的增益（原 63）          // ★默认增益（原 63 偏高，噪点大）
@@ -390,7 +390,7 @@ void LuUI_Key(void)
             {
                 case 0: if(zyuzhi > 20) zyuzhi -= 4; break;
                 case 1: if(Differ > -50) Differ -= 1; break;   // [2026-10-22] 与 flash 校验范围一致
-                case 2: if(cam_exposure > 60) { cam_exposure -= 100; cam_param_apply(); } break;
+                case 2: if(cam_exposure > 0) { cam_exposure -= 1; cam_param_apply(); } break;
                 case 3: if(cam_gain > 16)   { cam_gain     -= 4;  cam_param_apply(); } break;
                 case 4: if(Steer_Trim > -60) Steer_Trim -= 2; break;
                 default: if(lane_k > 20)     lane_k     -= 2; break;
@@ -416,7 +416,7 @@ void LuUI_Key(void)
             {
                 case 0: if(zyuzhi < 255) zyuzhi += 4; break;
                 case 1: if(Differ < 50) Differ += 1; break;
-                case 2: if(cam_exposure < 10000) { cam_exposure += 100; cam_param_apply(); } break;
+                case 2: if(cam_exposure < 10000) { cam_exposure += 1; cam_param_apply(); } break;
                 case 3: if(cam_gain < 124)     { cam_gain     += 4;  cam_param_apply(); } break;  // [2026-10-24] 64=1.0x增益，放开到124(0x7C)=1.94x；0x80是符号位不能用
                 case 4: if(Steer_Trim < 60)  Steer_Trim += 2; break;
                 default: if(lane_k < 95)      lane_k     += 2; break;
@@ -475,7 +475,7 @@ void LuUI_Key(void)
                 Differ       = 13;
                 Steer_Trim   = 16;
                 lane_k       = 75;    // [2026-10-22] 恢复默认时转向也要回 0
-                cam_exposure = 700;    // [2026-10-26] 长按 DOWN 恢复默认时也用 700
+                cam_exposure = 80;    // [2026-10-26] 长按 DOWN 恢复默认时也用 700
                 cam_gain     = 16;     // [2026-10-26] 同上
                 cam_param_apply();
                 reset_done   = 1;
@@ -558,7 +558,7 @@ void Parameter_Read(void)
     // ★范围校验，防止上次读出 0 导致全黑
     if(z >= 20.0f  && z <= 255.0f)   zyuzhi       = (uint8)z;
     if(d >= -50.0f && d <= 50.0f)    Differ       = (int8)d;
-    if(e >= 60.0f  && e <= 10000.0f) cam_exposure = (uint16)e;
+    if(e >= 0.0f  && e <= 10000.0f) cam_exposure = (uint16)e;
     if(g >= 16.0f  && g <= 124.0f)   cam_gain     = (uint8)g;   // [2026-10-24] 随增益上限一起放到 124
     if(flash_union_buffer[5].float_type >= -60.0f && flash_union_buffer[5].float_type <= 60.0f)
         Steer_Trim = (int16)flash_union_buffer[5].float_type;

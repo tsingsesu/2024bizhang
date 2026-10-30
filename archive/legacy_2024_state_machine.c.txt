@@ -1,0 +1,524 @@
+/* ==== 归档：2024 赛道状态机 + 无人调用的旧函数 ====
+   摘出时间：2026-10-30
+   原因：MOTION_2024_ENABLE 已置 0（2026 双车道赛道不用这套单车道逻辑），
+         Find_Cone_bucket 早被 Cone_Scan 取代，全工程零调用。
+   恢复方法：把对应段落粘回 code/Img_analyse.c 原来位置，
+         并把 Img_analyse.h 里的函数声明加回去。
+   本文件不参与 ADS 编译（不在 code/ 目录下）。 */
+
+/* ---------------- 2024 状态机调用块（原第 983~1156 行）---------------- */
+       先整体关掉，纯跟线；以后重做标线时改 MOTION_2024_ENABLE=1 或写新的。 */
+#define MOTION_2024_ENABLE    (0)
+#if MOTION_2024_ENABLE
+    if(tiaoguang==1)
+        {
+            Tiao_Light(data);
+        }
+    if(mode_2024==1)
+        {
+        if(Deal_Flag==0)
+                {
+                    Flag_turn=3;
+                    Flag_stop=0;
+                    Find_rhombus_Out(data);
+                    if(Rhombus_Out_Flag==1)
+                    {
+                        Flag_turn=0;
+                        Deal_Flag=1;
+                        Rhombus_Out_Flag=0;
+
+                    }
+                }
+            if(Flag_turn==0&&Deal_Flag==1)
+            {
+                Find_rhombus(data);
+            }
+            if(Flag_turn==0&&Deal_Flag==2)
+            {
+                Find_rhombus(data);
+            }
+            if(Flag_turn==0&&Deal_Flag==3)
+            {
+                Find_Decelerate(data);
+            }
+            if(Flag_turn==0&&Deal_Flag==4)
+            {
+                Find_Decelerate(data);
+            }
+            if(Flag_turn==0&&Deal_Flag==5)
+            {
+                Find_Zebra(data);
+            }
+            if(Flag_turn==0&&Deal_Flag==6)
+            {
+                Find_Rhombus(data);
+            }
+        }
+
+
+        if(mode_2024==2)
+        {
+            if(Deal_Flag==0)
+                    {
+                        Flag_turn=3;
+                        Flag_stop=0;
+                        Find_rhombus_Out(data);
+                        if(Rhombus_Out_Flag==1)
+                        {
+                            Flag_turn=0;
+                            Deal_Flag=1;
+                            Rhombus_Out_Flag=0;
+
+                        }
+                    }
+            if(Deal_Flag!=3&&Deal_Flag!=0&&Flag_turn==0)//识别到障碍物
+            {
+                Find_Decelerate(data);
+            }
+            if(Deal_Flag==3&&Flag_turn==0)//识别到障碍物
+            {
+                Find_Zebra(data);
+            }
+
+        }
+
+
+
+    //////////////////////////////////////////////////////执行区/////////////////////////////////////////////////
+
+        if(Rhombus_Flag==1&&mode_2024==1)
+        {
+                    switch(Deal_Flag)
+                    {
+                    case 1:
+                        {
+                            Turn_Left();//6
+                            break;
+                        }
+                    case 2:
+                        {
+                            Turn_Right();//0
+                            break;
+                        }
+                    case 3:
+                        {
+                            Decelerate(data);//6
+                            break;
+                        }
+                    case 4:
+                        {
+                            Decelerate_2(data);//6
+                            break;
+                        }
+                    case 5:
+                        {
+                            Zebra_Crossing(data);//6
+                            break;
+                        }
+                    case 6:
+                        {
+                            Flag_stop=5;
+                            Flag_turn=5;
+                            Distance_ON=1;
+                            Deal_Flag++;
+                            break;
+                        }
+                    case 7:
+                        {
+                            Find_Stop(data);
+                            if(Distance>20&&Stop_Out==1)
+                            {
+                            Flag_stop=1;
+                            gpio_set_level(P33_10,1);
+                            Light_Flag=1;
+                            }
+                            break;
+                        }
+                    default:break;
+                    }
+        }
+
+        if(Rhombus_Flag==1&&mode_2024==2)
+        {
+                switch(Deal_Flag)
+                {
+                case 1:
+                    {
+                        Decelerate(data);//6
+                        break;
+                    }
+                case 2:
+                    {
+                        Decelerate_2(data);//0
+                        break;
+                    }
+                case 3:
+                    {
+                        Zebra_Crossing(data);//6
+                        break;
+                    }
+                case 4:
+                    {
+
+                        Flag_stop=5;
+                        Flag_turn=5;
+                        //Rhombus_Flag=0;
+                        Distance_ON=1;
+                        Deal_Flag++;
+                        break;
+                    }
+                case 5:
+                    {
+                        if(Distance>20 )
+                        {
+                        Light_Flag=0;
+                        Flag_stop=1;
+                        gpio_set_level(P33_10,1);
+                        }
+                        break;
+                    }
+                default:break;
+                }
+        }
+#endif
+
+/* ---------------- Turn_Left（原第 1565~1586 行）---------------- */
+void Find_Zebra(uint8 *data)
+{
+    uint8 i,j,a=0;
+    for(i=25;i<=60;i++)
+    {
+        for(j=56;j<64;j++)
+        {
+            if(data[i*COL+j])
+            {
+                a++;
+            }
+        }
+        if(agl_blob_count(data, i, 1, COL-2) >= 2) a = 0;   // [2026-10-20] glare row
+        if(a>2)
+        {
+            gpio_set_level(P33_10,1);
+            Flag_stop=1;
+            Rhombus_Flag = 1;
+            break;
+        }
+    }
+}
+
+/* ---------------- Turn_Right（原第 1587~1606 行）---------------- */
+void Find_Decelerate(uint8 *data)
+{
+    uint8 i,j,a=0;
+    for(i=55;i>30;i--)
+    {
+        for(j=58;j<62;j++)
+        {
+            if(data[i*COL+j])
+            {
+                a++;
+            }
+        }
+        if(agl_blob_count(data, i, 1, COL-2) >= 2) a = 0;   // [2026-10-20] glare row
+        if(a>=2)
+        {
+            Rhombus_Flag = 1;
+            break;
+        }
+    }
+}
+
+/* ---------------- Decelerate（原第 1607~1625 行）---------------- */
+void Find_rhombus_Out(uint8 *data)
+{
+    uint8 i,j,a=0;
+    for(i=60;i>29;i--)
+    {
+        for(j=58;j<62;j++)
+        {
+            if(data[i*COL+j])
+            {
+                a++;
+
+            }
+        }
+    }
+    if(a<3)
+    {
+        Rhombus_Out_Flag =1;
+    }
+}
+
+/* ---------------- Decelerate_2（原第 1627~1662 行）---------------- */
+void New_boundary(uint8 *data, float *Ka, float *Kb)
+{
+    float ka,kb;
+    uint8 res;
+    Zhuan_Flag=1;
+    if(Zhuan_Flag)
+    {
+    for(i=15;i<18;i++)
+    {
+        for(j=35;j>30;j--)
+        {
+            if(data[i*COL+j]&&!data[(i-1)*COL+j]&&!data[(i+1)*COL+j])
+            {
+                a=i;
+                b=j;
+            }
+        }
+    }
+    a1=60;
+    b1=98;
+        ka = 1.0*(b1-b) / (a1-a);
+        kb = 1.0*b - (ka*a);
+        res = a * ka + kb;
+        res = range_protect((int32)res, 1, (COL-2)); // 闄愬箙
+        *Ka = ka;
+        *Kb = kb;
+    Right_Ka=*Ka;
+    Right_Kb=*Kb;
+    for(i=60;i>5;i--)
+    {
+        Right_Add_Line[i] = Calculate_Add(i, Right_Ka, Right_Kb);
+        Left_Add_Line[i]=4;
+        Mid_Line[i] = (Right_Add_Line[i]+Left_Add_Line[i]) / 2;
+    }
+    }
+}
+
+/* ---------------- Find_Zebra（原第 1664~1682 行）---------------- */
+uint8 Find_Cone_bucket(uint8 *data)
+{
+    uint8 i,k;
+    for(j=0;j<10;j++)
+    {
+        for(i=60;i<64;i++)
+        {
+            if(data[i*COL+j])
+            {
+                k++;
+                if(k>10)
+                {
+                Cone_bucket=1;
+                zyuzhi = 38;
+                }
+            }
+        }
+    }
+}
+
+/* ---------------- Find_Decelerate（原第 2186~2200 行）---------------- */
+void Point_Repair_Line(uint8 Start, uint8 Stop,uint16 position_start, uint16 position_stop ,uint16 *Line_Add)
+{
+    float res;
+    uint8 i;    // 鎺у埗琛�
+    float ka, kb;
+    ka = 1.0*(position_start - position_stop) / (Start - Stop);
+    kb = 1.0*position_start - (ka * Start);
+
+    for (i = Stop; i <= Start; )
+    {
+        i += 1;
+        res = i * ka + kb;
+        Line_Add[i] = range_protect((int32)res, 2, (COL-2));
+    }
+}
+
+/* ---------------- Find_rhombus_Out（原第 2222~2237 行）---------------- */
+uint8 zuobianjie( uint8 *data,uint8 Left_Min,uint8 Right_Max)
+{
+    uint8 i,j;
+    for(i=60;i>5;i--)
+    {
+        for (j =2; j <= 30; j+=1)
+        {
+            if(data[i*COL + j])
+            {
+                Right_Flag = 1;
+                Left_Add_Line[i] = j;
+                break;
+            }
+        }
+    }
+}
+
+/* ---------------- New_boundary（原第 2239~2253 行）---------------- */
+uint8 youbianjie( uint8 *data, uint8 Left_Min, uint8 Right_Max)
+{
+        for(i=60;i>=5;i--)
+        {
+            for (j = 110; j >= 90; j-=1)  // 杈圭晫鍧愭爣 235 ~ 4
+            {
+                    if(data[i*COL + j] )
+                    {
+                        Right_Flag = 1;
+                        Right_Add_Line[i]=j;
+                        break;
+                    }
+            }
+        }
+}
+
+/* ---------------- Point_Repair_Line（原第 2302~2358 行）---------------- */
+void Turn_Left(void)
+{
+    if(Flag_turn == 0&&Flag_stop==0)
+    {
+        Flag_stop = 7;
+        Flag_turn = 3;
+        Distance_Test_ON = 1;
+    }
+    if(Flag_stop == 7&&Distance_Test>50)
+    {
+        Distance_Test = 0;
+        Distance_Test_ON = 0;
+
+        Light_Flag=2;
+
+        Flag_turn = 1;
+        Flag_stop = 2;
+
+        Distance_ON = 1;
+    }
+    if(Flag_turn == 1 && Distance > 165)//180
+    {
+        Distance_ON = 0;
+        Distance = 0;
+        Light_Flag=0;
+
+        Flag_turn = 6;//鍙宠浆鐭
+
+        Flag_stop = 3;//鍙宠浆鐭閫熷害
+        Distance_Test_ON = 1;
+    }
+
+    if(Flag_turn == 6 && Distance_Test > 85 )//鍙宠浆澶嶄綅
+    {
+        gpio_set_level(P33_10,1);//铚傞福鍣ㄥ叧闂�
+        Distance_Test = 0;
+        Distance_Test_ON = 0;
+
+        Flag_turn = 0;
+        Flag_stop = 5;
+        Distance_ON = 1;
+    }
+    if(Flag_turn == 0 && Distance > 450 )//缁欎竴娈佃窛绂诲惊杩瑰浣�
+    {
+        gpio_set_level(P33_10,0);//铚傞福鍣ㄥ叧闂�
+        Distance_ON = 0;
+        Distance = 0;
+
+        Flag_turn = 0;
+        Flag_stop=0;
+
+        Rhombus_Flag=0;
+        Deal_Flag=2;
+        Distance_Test_ON = 1;
+    }
+
+}
+
+/* ---------------- zuobianjie（原第 2359~2417 行）---------------- */
+void Turn_Right(void)
+{
+    if(Flag_turn == 0&&Flag_stop==0)
+    {
+        Flag_stop = 7;
+        Flag_turn = 3;
+        Distance_Test_ON = 1;
+    }
+    if(Flag_stop == 7&&Distance_Test>30)
+    {
+        Distance_Test = 0;
+        Distance_Test_ON = 0;
+        Light_Flag=3;//鍙宠浆鍚戠伅
+
+        Flag_turn = 2;//鍙宠浆
+        Flag_stop = 3;//鍙宠浆閫熷害
+
+        Distance_ON = 1;//寮�鍚噷绋嬭
+    }
+    if(Flag_turn == 2 && Distance >165)
+    {
+        Distance_ON = 0;
+        Distance = 0;
+
+
+        Light_Flag=0;
+        gpio_set_level(P33_10,1);//铚傞福鍣�
+        Flag_turn = 1;//宸﹁浆鐭
+
+        Flag_stop = 2;//宸﹁浆鐭閫熷害
+        Distance_Test_ON = 1;
+    }
+
+    if(Flag_turn == 1 && Distance_Test >85)
+    {
+        gpio_set_level(P33_10,0);//铚傞福鍣�
+        Distance_Test = 0;
+        Distance_Test_ON = 0;
+        gpio_set_level(P15_7,1);// [2026-10-29] P20_13 已弃用，前照灯改到 P15_7
+        gpio_set_level(P21_4,1);
+        Flag_turn = 10;
+        Flag_stop = 5;
+
+        gpio_set_level(P21_5, 0);
+
+        Distance_ON = 1;
+     }
+    if(Flag_turn == 10 && Distance > 400 )
+     {
+        Rhombus_Flag=0;
+
+        Deal_Flag=3;
+        Flag_turn = 0;
+        Flag_stop = 0;
+        Distance_ON = 0;
+        Distance = 0;
+     }
+
+}
+
+/* ---------------- youbianjie（原第 2418~2434 行）---------------- */
+void Decelerate(uint8 *data)
+{
+    Flag_stop=5;
+    Flag_turn=3;
+    Light_Flag=1;
+
+    Find_rhombus_Out(data);
+    if(Rhombus_Out_Flag==1)
+    {
+       Flag_stop=5;
+       Flag_turn=0;
+       Deal_Flag++;
+       Rhombus_Flag=0;
+       Rhombus_Out_Flag=0;
+
+   }
+}
+
+/* ---------------- Find_Cone_bucket（原第 2435~2456 行）---------------- */
+void Decelerate_2(uint8 *data)
+{
+    Flag_stop=5;
+    Flag_turn=3;
+    Light_Flag=1;
+
+    Find_rhombus_Out(data);
+    if(Rhombus_Out_Flag==1)
+    {
+        Distance_Test_ON=1;
+        if(Distance_Test>150)
+        {
+            Distance_Test_ON=0;
+            Distance_Test=0;
+            Flag_stop=8;
+            Flag_turn=0;
+            Deal_Flag++;
+            Rhombus_Flag=0;
+            Rhombus_Out_Flag=0;
+        }
+    }
+}

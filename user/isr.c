@@ -87,11 +87,15 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
 #define TF_WIN_N     (12)    /* 滚动窗口：最近 12 个有效样本 */
 #define TF_HIT_N     (8)     /* 12 个里 8 个是近距 → 发车 */
 #define TF_ARM_TICKS (200)   /* 5ms × 200 = 1 秒"前方空旷"才布防（防抢跑） */
+#define TF_BAND_LO_MM (300)  /* [2026-10-28] 直接发车窗口下限 30cm */
+#define TF_BAND_HI_MM (400)  /* 上限 40cm */
+#define TF_BAND_N     (3)    /* 连续 3 个样本落在窗口内就发车 */
     {
         static uint16 tf_hist      = 0;   // 最近 TF_WIN_N 个样本的"有东西"位图
         static uint8  tf_hist_n    = 0;   // 位图里已累计的样本数
         static uint8  tf_armed     = 0;   // 已经看到过 1 秒空旷 → 允许发车
         static uint32 tf_last_tick = 0;   // 上一个有效样本的时刻（5ms 计数）
+        static uint8  tf_band      = 0;   // [2026-10-28] 连续落在 30~40cm 窗口的次数
         uint8 tf_i, tf_hits_now = 0;
 
         if(!Stop_1)
@@ -119,6 +123,16 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, 0, CCU6_1_CH0_ISR_PRIORITY)//10ms
 
                 if(tf_hist_n >= TF_WIN_N && tf_hits_now >= TF_HIT_N)
                     start_trigger = 1;
+
+                /* [2026-10-28] 直接窗口发车：DL1B 读到 30~40cm，连续 3 次就走。
+                   原来的投票要「先看够 1 秒前方空旷」才布防；ToF 朝前稍向下时
+                   地面一直有读数，布不了防，永远发不了车。 */
+                if(d >= TF_BAND_LO_MM && d <= TF_BAND_HI_MM)
+                {
+                    if(tf_band < 255) tf_band ++;
+                    if(tf_band >= TF_BAND_N) start_trigger = 1;
+                }
+                else tf_band = 0;
             }
 
             start_ready = tf_armed;          /* 1 = 已布防，可以挥手了 */

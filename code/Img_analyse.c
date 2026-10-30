@@ -110,6 +110,15 @@ uint8 agl_blob_pair     = 0;   // diag: rows that contained two glare-sized whit
 #define MK_DIA_MAX_ROWS         (40)    // 超过这个行数不算菱形（防止整屏误判）
 #define MK_CW_SPAN_PCT          (60)   /* Minimum white coverage of the central window. */
 
+/* [2026-10-28] 斑马线条纹判据。旧的「一条宽白带」在实车上只有压上去才成立。 */
+#define MK_STRIPE_MIN           (2)     /* 一条白条最窄宽度(px) */
+#define MK_STRIPE_MAX           (14)    /* 最宽；再宽就是白块/停车线 */
+#define MK_STRIPE_GAP           (2)     /* 白条前面至少要隔几 px 黑 */
+#define MK_STRIPE_N             (3)     /* 一行里至少几条并排白条 */
+#define MK_CW_FILL_PCT          (30)    /* 整行白色至少占窗口的 30% */
+#define MK_CW_COL_L             (20)    /* 横道扫描窗口（比菱形宽，为了多装几条） */
+#define MK_CW_COL_R             (100)
+
 volatile uint8 mk_cw_seen = 0,  mk_cw_near  = 0, mk_cw_score  = 0;   // 人行横道
 volatile uint8 mk_dia_seen = 0, mk_dia_near = 0, mk_dia_score = 0;   // 减速菱形
 volatile uint8 mk_state = 0; /* 0 lane, 1 slow, 2 wait, 3 cross, 4 passed */
@@ -181,54 +190,69 @@ static uint8 Mai_Diamond_Scan(uint8 *data, uint8 *near_row)
     return best;
 }
 
-/* Crosswalk paint interrupts lane extraction itself. Use current pixels,
-   requiring multiple broad, centre-spanning stripes with real dark gaps,
-   rather than demanding valid lane edges inside the white paint. */
+/* [2026-10-28] 人行横道：一行里有一排【并排】的窄白条。
+   旧判据要「一条白带横跨中心 >=30px」，但斑马线条纹沿行车方向排列，
+   远处根本没有这样一条长白带（实测接近过程中 cw_rows 只有 2~6，
+   车头压上去、相邻条纹糊成一片时才跳到 51）—— 所以永远来不及停。
+   新判据数条纹：宽度 2~14px、前面至少隔 2px 黑、一行里 >=3 条。
+     减速菱形 = 2 条细线      -> 过不了
+     锥桶     = 一个白块      -> 过不了
+     停车线   = 一条宽横线    -> 宽度超过 14px，过不了 */
 static uint8 Mai_Crosswalk_Scan(uint8 *data, uint8 *near_row, uint8 *bands)
 {
-    uint8 y, x, run, begin, broad, dark, height = 0, gap = 2, accepted = 0, rows = 0;
-    *near_row = *bands = 0;
+    uint8 y, x, run, begin, pre, gap, n;
+    uint16 white;
+    uint8 height = 0, rows = 0, bands_n = 0, near = 0;
+
+    *near_row = 0;
+    *bands = 0;
+
     for(y = MK_ROW_MIN; y <= MK_ROW_MAX; y ++)
     {
-        run = broad = dark = 0;
-        begin = MK_BAND_L;
-        for(x = MK_BAND_L; x <= MK_BAND_R; x ++)
+        n = 0;
+        white = 0;
+        run = 0;
+        pre = 0;
+        gap = 0;
+        begin = MK_CW_COL_L;
+
+        for(x = MK_CW_COL_L; x <= MK_CW_COL_R; x ++)
         {
             if(data[y * COL + x])
             {
-                if(!run) begin = x;
+                if(0 == run) { begin = x; pre = gap; }
                 run ++;
-                if(run >= MK_CW_RUN_MIN &&
-                   (uint16)run * 100 >= (MK_BAND_R - MK_BAND_L + 1) * MK_CW_SPAN_PCT &&
-                   begin <= COL / 2 - 12 && x >= COL / 2 + 12)
-                    broad = 1;
+                white ++;
+                gap = 0;
             }
             else
             {
-                run = 0;
-                if(x >= COL / 2 - 10 && x <= COL / 2 + 10) dark ++;
+                if(run)
+                {
+                    if(run >= MK_STRIPE_MIN && run <= MK_STRIPE_MAX && pre >= MK_STRIPE_GAP)
+                        n ++;
+                    run = 0;
+                }
+                if(gap < 255) gap ++;
             }
         }
-        if(broad)
+        if(run && run >= MK_STRIPE_MIN && run <= MK_STRIPE_MAX && pre >= MK_STRIPE_GAP)
+            n ++;
+
+        /* 条纹数够 且 整行白色占比够（车道线只有 3 条 2px 的线，占比 7%，
+           斑马线是 40%~50%）—— 这一条把「左边线+中线+右边线」挡在外面。 */
+        if(n >= MK_STRIPE_N &&
+           white * 100 >= (MK_CW_COL_R - MK_CW_COL_L + 1) * MK_CW_FILL_PCT)
         {
-            if(!height) accepted = (uint8)(gap >= 2);
+            if(0 == height) bands_n ++;      /* 一段新的连续行 */
             height ++;
-            gap = 0;
-            /* At least two rows per stripe; isolated fragments are insufficient. */
-            if(accepted && height >= 2)
-            {
-                if(height == 2) { (*bands) ++; rows += 2; }
-                else rows ++;
-                *near_row = y;
-            }
+            if(height >= 2) { rows ++; near = y; }
         }
-        else
-        {
-            height = accepted = 0;
-            if(dark >= 16) { if(gap < 255) gap ++; }
-            else gap = 0;
-        }
+        else height = 0;
     }
+
+    *near_row = near;
+    *bands = bands_n;
     return rows;
 }
 
@@ -248,7 +272,7 @@ void Marker_Scan(uint8 *data)
     mk_cw_bands = bands;
     mk_cw_score = cw_rows;
     mk_dia_score = dia_rows;
-    mk_cw_seen = (uint8)(cw_rows >= MK_CW_MIN_ROWS && bands >= 2);
+    mk_cw_seen = (uint8)(cw_rows >= MK_CW_MIN_ROWS);   /* [2026-10-28] 斑马线在画面里是连续一大片，bands 只会是 1，不再要求 2 条带；条纹判据本身已经拦住菱形/锥桶/停车线 */
     mk_dia_seen = (uint8)(dia_rows >= MK_DIA_MIN_ROWS && dia_rows <= MK_DIA_MAX_ROWS);
     mk_cw_near = mk_cw_seen ? cw_near : 0;
     mk_dia_near = mk_dia_seen ? dia_near : 0;
@@ -953,183 +977,10 @@ void Image_Handle(uint8 *data)
 //        Flag_stop = 0;
 //        Deal_Flag=1;
 //    }
-    /* [2026-10-22] 2024 赛道的运动状态机：菱形、斑马线、Turn_Left/Turn_Right。
-       它现在一上电就被 ToF 发车逻辑自动拉起来（Flag_stop=7, Flag_turn=3），
-       而这套菱形/单车道逻辑不是 2026 双车道赛道，会把基础循迹搅乱。
-       先整体关掉，纯跟线；以后重做标线时改 MOTION_2024_ENABLE=1 或写新的。 */
-#define MOTION_2024_ENABLE    (0)
-#if MOTION_2024_ENABLE
-    if(tiaoguang==1)
-        {
-            Tiao_Light(data);
-        }
-    if(mode_2024==1)
-        {
-        if(Deal_Flag==0)
-                {
-                    Flag_turn=3;
-                    Flag_stop=0;
-                    Find_rhombus_Out(data);
-                    if(Rhombus_Out_Flag==1)
-                    {
-                        Flag_turn=0;
-                        Deal_Flag=1;
-                        Rhombus_Out_Flag=0;
-
-                    }
-                }
-            if(Flag_turn==0&&Deal_Flag==1)
-            {
-                Find_rhombus(data);
-            }
-            if(Flag_turn==0&&Deal_Flag==2)
-            {
-                Find_rhombus(data);
-            }
-            if(Flag_turn==0&&Deal_Flag==3)
-            {
-                Find_Decelerate(data);
-            }
-            if(Flag_turn==0&&Deal_Flag==4)
-            {
-                Find_Decelerate(data);
-            }
-            if(Flag_turn==0&&Deal_Flag==5)
-            {
-                Find_Zebra(data);
-            }
-            if(Flag_turn==0&&Deal_Flag==6)
-            {
-                Find_Rhombus(data);
-            }
-        }
-
-
-        if(mode_2024==2)
-        {
-            if(Deal_Flag==0)
-                    {
-                        Flag_turn=3;
-                        Flag_stop=0;
-                        Find_rhombus_Out(data);
-                        if(Rhombus_Out_Flag==1)
-                        {
-                            Flag_turn=0;
-                            Deal_Flag=1;
-                            Rhombus_Out_Flag=0;
-
-                        }
-                    }
-            if(Deal_Flag!=3&&Deal_Flag!=0&&Flag_turn==0)//识别到障碍物
-            {
-                Find_Decelerate(data);
-            }
-            if(Deal_Flag==3&&Flag_turn==0)//识别到障碍物
-            {
-                Find_Zebra(data);
-            }
-
-        }
-
-
-
-    //////////////////////////////////////////////////////执行区/////////////////////////////////////////////////
-
-        if(Rhombus_Flag==1&&mode_2024==1)
-        {
-                    switch(Deal_Flag)
-                    {
-                    case 1:
-                        {
-                            Turn_Left();//6
-                            break;
-                        }
-                    case 2:
-                        {
-                            Turn_Right();//0
-                            break;
-                        }
-                    case 3:
-                        {
-                            Decelerate(data);//6
-                            break;
-                        }
-                    case 4:
-                        {
-                            Decelerate_2(data);//6
-                            break;
-                        }
-                    case 5:
-                        {
-                            Zebra_Crossing(data);//6
-                            break;
-                        }
-                    case 6:
-                        {
-                            Flag_stop=5;
-                            Flag_turn=5;
-                            Distance_ON=1;
-                            Deal_Flag++;
-                            break;
-                        }
-                    case 7:
-                        {
-                            Find_Stop(data);
-                            if(Distance>20&&Stop_Out==1)
-                            {
-                            Flag_stop=1;
-                            gpio_set_level(P33_10,1);
-                            Light_Flag=1;
-                            }
-                            break;
-                        }
-                    default:break;
-                    }
-        }
-
-        if(Rhombus_Flag==1&&mode_2024==2)
-        {
-                switch(Deal_Flag)
-                {
-                case 1:
-                    {
-                        Decelerate(data);//6
-                        break;
-                    }
-                case 2:
-                    {
-                        Decelerate_2(data);//0
-                        break;
-                    }
-                case 3:
-                    {
-                        Zebra_Crossing(data);//6
-                        break;
-                    }
-                case 4:
-                    {
-
-                        Flag_stop=5;
-                        Flag_turn=5;
-                        //Rhombus_Flag=0;
-                        Distance_ON=1;
-                        Deal_Flag++;
-                        break;
-                    }
-                case 5:
-                    {
-                        if(Distance>20 )
-                        {
-                        Light_Flag=0;
-                        Flag_stop=1;
-                        gpio_set_level(P33_10,1);
-                        }
-                        break;
-                    }
-                default:break;
-                }
-        }
-#endif
+    /* [2026-10-22] 2024 赛道的运动状态机（菱形/斑马线/Turn_Left/Turn_Right）
+       [2026-10-30] 整块摘出，挪到 archive/legacy_2024_state_machine.c.txt。
+       原因：和 2026 双车道逻辑不匹配，MOTION_2024_ENABLE 一直是 0，等于死代码。
+       要恢复就从那个归档文件粘回来，并把 MOTION_2024_ENABLE 改回 1。 */
 
 //8.6
 
@@ -1538,124 +1389,8 @@ void Find_Rhombus(uint8 *data)
         }
     }
 }
-void Find_Zebra(uint8 *data)
-{
-    uint8 i,j,a=0;
-    for(i=25;i<=60;i++)
-    {
-        for(j=56;j<64;j++)
-        {
-            if(data[i*COL+j])
-            {
-                a++;
-            }
-        }
-        if(agl_blob_count(data, i, 1, COL-2) >= 2) a = 0;   // [2026-10-20] glare row
-        if(a>2)
-        {
-            gpio_set_level(P33_10,1);
-            Flag_stop=1;
-            Rhombus_Flag = 1;
-            break;
-        }
-    }
-}
-void Find_Decelerate(uint8 *data)
-{
-    uint8 i,j,a=0;
-    for(i=55;i>30;i--)
-    {
-        for(j=58;j<62;j++)
-        {
-            if(data[i*COL+j])
-            {
-                a++;
-            }
-        }
-        if(agl_blob_count(data, i, 1, COL-2) >= 2) a = 0;   // [2026-10-20] glare row
-        if(a>=2)
-        {
-            Rhombus_Flag = 1;
-            break;
-        }
-    }
-}
-void Find_rhombus_Out(uint8 *data)
-{
-    uint8 i,j,a=0;
-    for(i=60;i>29;i--)
-    {
-        for(j=58;j<62;j++)
-        {
-            if(data[i*COL+j])
-            {
-                a++;
-
-            }
-        }
-    }
-    if(a<3)
-    {
-        Rhombus_Out_Flag =1;
-    }
-}
 /*********鑷富杈圭晫*************************/
-void New_boundary(uint8 *data, float *Ka, float *Kb)
-{
-    float ka,kb;
-    uint8 res;
-    Zhuan_Flag=1;
-    if(Zhuan_Flag)
-    {
-    for(i=15;i<18;i++)
-    {
-        for(j=35;j>30;j--)
-        {
-            if(data[i*COL+j]&&!data[(i-1)*COL+j]&&!data[(i+1)*COL+j])
-            {
-                a=i;
-                b=j;
-            }
-        }
-    }
-    a1=60;
-    b1=98;
-        ka = 1.0*(b1-b) / (a1-a);
-        kb = 1.0*b - (ka*a);
-        res = a * ka + kb;
-        res = range_protect((int32)res, 1, (COL-2)); // 闄愬箙
-        *Ka = ka;
-        *Kb = kb;
-    Right_Ka=*Ka;
-    Right_Kb=*Kb;
-    for(i=60;i>5;i--)
-    {
-        Right_Add_Line[i] = Calculate_Add(i, Right_Ka, Right_Kb);
-        Left_Add_Line[i]=4;
-        Mid_Line[i] = (Right_Add_Line[i]+Left_Add_Line[i]) / 2;
-    }
-    }
-}
 /*********杈呭姪鍒ゅ埆閿ユ《*************************/
-uint8 Find_Cone_bucket(uint8 *data)
-{
-    uint8 i,k;
-    for(j=0;j<10;j++)
-    {
-        for(i=60;i<64;i++)
-        {
-            if(data[i*COL+j])
-            {
-                k++;
-                if(k>10)
-                {
-                Cone_bucket=1;
-                zyuzhi = 38;
-                }
-            }
-        }
-    }
-}
 //  浠庢煇涓�鍒� 浠庡簳鍚戜笂鎼滃缁堢偣  杩斿洖 琛屾暟
 uint8 Find_J_Black(uint8 *data, uint8 j,uint8 start,uint8 end)
 {
@@ -2159,21 +1894,6 @@ void Line_Repair(uint8 Start, uint8 Stop, uint8 *data, uint16 *Line, uint16 *Lin
 *   璇存槑锛氫换鎰忎袱鐐硅ˉ涓�鏉＄洿绾�
 *
 */   // Start Stop 寮�濮嬬粨鏉� 琛ョ嚎鐐圭殑 琛屾暟  position_start position_stop   琛ョ嚎鐐圭殑鍒楁暟    Line_Add 瑕佽ˉ鐨勭嚎
-void Point_Repair_Line(uint8 Start, uint8 Stop,uint16 position_start, uint16 position_stop ,uint16 *Line_Add)
-{
-    float res;
-    uint8 i;    // 鎺у埗琛�
-    float ka, kb;
-    ka = 1.0*(position_start - position_stop) / (Start - Stop);
-    kb = 1.0*position_start - (ka * Start);
-
-    for (i = Stop; i <= Start; )
-    {
-        i += 1;
-        res = i * ka + kb;
-        Line_Add[i] = range_protect((int32)res, 2, (COL-2));
-    }
-}
 
 
 
@@ -2195,38 +1915,7 @@ int32 range_protect(int32 duty, int32 min, int32 max)//闄愬箙淇濇姢
     }
 }
 /******** 浠庡乏鎵乏杈圭晫 *********/
-uint8 zuobianjie( uint8 *data,uint8 Left_Min,uint8 Right_Max)
-{
-    uint8 i,j;
-    for(i=60;i>5;i--)
-    {
-        for (j =2; j <= 30; j+=1)
-        {
-            if(data[i*COL + j])
-            {
-                Right_Flag = 1;
-                Left_Add_Line[i] = j;
-                break;
-            }
-        }
-    }
-}
 /******** 浠庡彸鎵彸杈圭晫 *********/
-uint8 youbianjie( uint8 *data, uint8 Left_Min, uint8 Right_Max)
-{
-        for(i=60;i>=5;i--)
-        {
-            for (j = 110; j >= 90; j-=1)  // 杈圭晫鍧愭爣 235 ~ 4
-            {
-                    if(data[i*COL + j] )
-                    {
-                        Right_Flag = 1;
-                        Right_Add_Line[i]=j;
-                        break;
-                    }
-            }
-        }
-}
 
 void  Find_Rhombus_Out(uint8 *data)
 {
@@ -2275,161 +1964,6 @@ void  Find_Stop(uint8 *data)
         }
 }
 
-void Turn_Left(void)
-{
-    if(Flag_turn == 0&&Flag_stop==0)
-    {
-        Flag_stop = 7;
-        Flag_turn = 3;
-        Distance_Test_ON = 1;
-    }
-    if(Flag_stop == 7&&Distance_Test>50)
-    {
-        Distance_Test = 0;
-        Distance_Test_ON = 0;
-
-        Light_Flag=2;
-
-        Flag_turn = 1;
-        Flag_stop = 2;
-
-        Distance_ON = 1;
-    }
-    if(Flag_turn == 1 && Distance > 165)//180
-    {
-        Distance_ON = 0;
-        Distance = 0;
-        Light_Flag=0;
-
-        Flag_turn = 6;//鍙宠浆鐭
-
-        Flag_stop = 3;//鍙宠浆鐭閫熷害
-        Distance_Test_ON = 1;
-    }
-
-    if(Flag_turn == 6 && Distance_Test > 85 )//鍙宠浆澶嶄綅
-    {
-        gpio_set_level(P33_10,1);//铚傞福鍣ㄥ叧闂�
-        Distance_Test = 0;
-        Distance_Test_ON = 0;
-
-        Flag_turn = 0;
-        Flag_stop = 5;
-        Distance_ON = 1;
-    }
-    if(Flag_turn == 0 && Distance > 450 )//缁欎竴娈佃窛绂诲惊杩瑰浣�
-    {
-        gpio_set_level(P33_10,0);//铚傞福鍣ㄥ叧闂�
-        Distance_ON = 0;
-        Distance = 0;
-
-        Flag_turn = 0;
-        Flag_stop=0;
-
-        Rhombus_Flag=0;
-        Deal_Flag=2;
-        Distance_Test_ON = 1;
-    }
-
-}
-void Turn_Right(void)
-{
-    if(Flag_turn == 0&&Flag_stop==0)
-    {
-        Flag_stop = 7;
-        Flag_turn = 3;
-        Distance_Test_ON = 1;
-    }
-    if(Flag_stop == 7&&Distance_Test>30)
-    {
-        Distance_Test = 0;
-        Distance_Test_ON = 0;
-        Light_Flag=3;//鍙宠浆鍚戠伅
-
-        Flag_turn = 2;//鍙宠浆
-        Flag_stop = 3;//鍙宠浆閫熷害
-
-        Distance_ON = 1;//寮�鍚噷绋嬭
-    }
-    if(Flag_turn == 2 && Distance >165)
-    {
-        Distance_ON = 0;
-        Distance = 0;
-
-
-        Light_Flag=0;
-        gpio_set_level(P33_10,1);//铚傞福鍣�
-        Flag_turn = 1;//宸﹁浆鐭
-
-        Flag_stop = 2;//宸﹁浆鐭閫熷害
-        Distance_Test_ON = 1;
-    }
-
-    if(Flag_turn == 1 && Distance_Test >85)
-    {
-        gpio_set_level(P33_10,0);//铚傞福鍣�
-        Distance_Test = 0;
-        Distance_Test_ON = 0;
-        gpio_set_level(P20_13,1);
-        gpio_set_level(P21_4,1);
-        Flag_turn = 10;
-        Flag_stop = 5;
-
-        gpio_set_level(P21_5, 0);
-
-        Distance_ON = 1;
-     }
-    if(Flag_turn == 10 && Distance > 400 )
-     {
-        Rhombus_Flag=0;
-
-        Deal_Flag=3;
-        Flag_turn = 0;
-        Flag_stop = 0;
-        Distance_ON = 0;
-        Distance = 0;
-     }
-
-}
-void Decelerate(uint8 *data)
-{
-    Flag_stop=5;
-    Flag_turn=3;
-    Light_Flag=1;
-
-    Find_rhombus_Out(data);
-    if(Rhombus_Out_Flag==1)
-    {
-       Flag_stop=5;
-       Flag_turn=0;
-       Deal_Flag++;
-       Rhombus_Flag=0;
-       Rhombus_Out_Flag=0;
-
-   }
-}
-void Decelerate_2(uint8 *data)
-{
-    Flag_stop=5;
-    Flag_turn=3;
-    Light_Flag=1;
-
-    Find_rhombus_Out(data);
-    if(Rhombus_Out_Flag==1)
-    {
-        Distance_Test_ON=1;
-        if(Distance_Test>150)
-        {
-            Distance_Test_ON=0;
-            Distance_Test=0;
-            Flag_stop=8;
-            Flag_turn=0;
-            Deal_Flag++;
-            Rhombus_Flag=0;
-            Rhombus_Out_Flag=0;
-        }
-    }
-}
 void Zebra_Crossing(uint8 *data)
 {
     if(Flag_turn==0)

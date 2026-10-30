@@ -75,10 +75,10 @@
 #error "WIFI_SPI_AUTO_CONNECT 的值只能为 [0,1,2]"
 #else   
 // ★热点账号（cpu0_main.c 里传入 wifi_spi_init）
-#define WIFI_SSID                   "minoshima"
-#define WIFI_PASS                   "uuuuvvvv"
+#define WIFI_SSID                   "11"
+#define WIFI_PASS                   "123321123"
 
-#define WIFI_SPI_TARGET_IP          "192.168.43.210"   // ★电脑在热点下的 IP              // 连接目标的 IP
+#define WIFI_SPI_TARGET_IP          "192.168.214.24"   // [2026-10-28] 改回自己电脑在热点下的 IP              // 连接目标的 IP
 #define WIFI_SPI_TARGET_PORT        "8086"   // ★和逐飞助手 v1.2.7 一致                      // 连接目标的端口
 #define WIFI_SPI_LOCAL_PORT         "6666"                      // 本机的端口 0：随机  可设置范围2048-65535  默认 6666
 #endif

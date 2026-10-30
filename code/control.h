@@ -16,6 +16,18 @@ extern uint16 vision_age_ticks, track_bad_ticks;
 extern uint8 steer_look_row, cone_group_cnt, cone_turn_percent;
 extern int32 steer_normal_target;
 extern uint16 steer_lane_left, steer_lane_right;
+
+/* [2026-10-29] 前照灯闪灯（超车用）：调用一次闪 ms 毫秒，0 = 常亮 */
+extern volatile uint16 head_flash_ms;
+void Head_Flash_Start(uint16 ms);
+
+/* [2026-10-30] 前照灯极性（P15_7 左 / P20_9 右）
+   0 = 高电平点亮：灯 + 接引脚，灯 - 接 GND
+   1 = 低电平点亮：灯 + 接 5V，灯 - 接引脚（引脚=0 亮、引脚=3.3V 灭，5V 和 3V3 必须共地）
+   改接线方式时只改这一个宏。
+   [2026-10-30 实测] 灯 + 接引脚、灯 - 接 GND，3.3V 直驱亮度够 → 定回高电平点亮（0）。 */
+#define HEAD_LIGHT_ACTIVE_LOW   (0)
+#define HEAD_SET(pin, on)       gpio_set_level((pin), (uint8)(((on) ? 1 : 0) ^ HEAD_LIGHT_ACTIVE_LOW))
 extern uint8 drive_inhibit, drive_inhibit_reason, mk_finish_reason;
 extern uint16 mk_stop_elapsed_ms, mk_clear_remaining_mm;
 extern double run_distance_cm;
